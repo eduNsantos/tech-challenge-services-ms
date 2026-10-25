@@ -22,3 +22,21 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+# Terraform
+auto-generated
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.backup
+.terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+
+# Ignore Terraform infrastructure folder
+infra/
