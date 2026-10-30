@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.git
+vendor
+node_modules
+infra
+k8s
+docker
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+database/*.sqlite
+tests
+bootstrap/cache/*.php

@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: services-ms-web
+  namespace: services-ms
+  labels:
+    app: services-ms-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: services-ms-web
+  template:
+    metadata:
+      labels:
+        app: services-ms-web
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: web
+          image: ghcr.io/edunsantos/tech-challenge-services-ms:latest
+          imagePullPolicy: Always
+          command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: services-ms-config
+            - secretRef:
+                name: services-ms-secret
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

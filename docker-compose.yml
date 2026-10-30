@@ -20,3 +20,13 @@ services:
     volumes:
       - .:/var/www
     command: "php artisan serve --host=0.0.0.0 --port=8000"
+
+  localstack:
+    image: localstack/localstack:3
+    container_name: services-ms-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs
+    volumes:
+      - ./docker/localstack/init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh

@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: services-ms-migrate
+  namespace: services-ms
+  labels:
+    app: services-ms
+    component: migrate
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: ghcr.io/edunsantos/tech-challenge-services-ms:latest
+          imagePullPolicy: Always
+          command: ["php", "artisan", "migrate", "--force"]
+          envFrom:
+            - configMapRef:
+                name: services-ms-config
+            - secretRef:
+                name: services-ms-secret
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"

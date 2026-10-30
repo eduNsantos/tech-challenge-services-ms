@@ -1,3 +1,18 @@
+# Services MS
+
+Microsserviço de execução dos serviços da O.S. (status, início e fim de cada serviço).
+
+- Entrada: fila SQS FIFO `service-orders-created` (comando `php artisan sqs:consume-service-orders`).
+- Saída: fila SQS FIFO `service-order-status-changed`, via outbox (comando `php artisan outbox:publish`).
+- API (JWT HS256, mesmo `JWT_SECRET` do monólito): `GET /service-orders/{id}`, `PATCH /service-orders/{id}/status`, `POST /service-orders/{id}/services/{sid}/start|finish`.
+- Infra em `infra/` (Terraform) e manifests em `k8s/`.
+
+## Risco conhecido (ambiente de lab)
+
+O RDS em `infra/rds.tf` é `publicly_accessible` e o security group libera a porta 3306 para `0.0.0.0/0`, porque ele fica numa VPC separada da do EKS. Isso foi mantido de propósito para o lab e **não deve ir para produção**. Para produção: RDS privado, VPC peering (ou Transit Gateway) com o EKS e ingress da 3306 restrito ao security group/CIDR do cluster. Troque também a senha padrão `db_password` em `infra/variables.tf`.
+
+---
+
 <p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
 
 <p align="center">

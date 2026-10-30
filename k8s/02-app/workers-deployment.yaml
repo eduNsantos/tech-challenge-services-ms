@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: services-ms-consumer
+  namespace: services-ms
+  labels:
+    app: services-ms-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: services-ms-consumer
+  template:
+    metadata:
+      labels:
+        app: services-ms-consumer
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: consumer
+          image: ghcr.io/edunsantos/tech-challenge-services-ms:latest
+          imagePullPolicy: Always
+          command: ["php", "artisan", "sqs:consume-service-orders"]
+          envFrom:
+            - configMapRef:
+                name: services-ms-config
+            - secretRef:
+                name: services-ms-secret
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: services-ms-outbox
+  namespace: services-ms
+  labels:
+    app: services-ms-outbox
+spec:
+  # Uma única réplica preserva a ordem de publicação por O.S.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: services-ms-outbox
+  template:
+    metadata:
+      labels:
+        app: services-ms-outbox
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: outbox
+          image: ghcr.io/edunsantos/tech-challenge-services-ms:latest
+          imagePullPolicy: Always
+          command: ["php", "artisan", "outbox:publish"]
+          envFrom:
+            - configMapRef:
+                name: services-ms-config
+            - secretRef:
+                name: services-ms-secret
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
