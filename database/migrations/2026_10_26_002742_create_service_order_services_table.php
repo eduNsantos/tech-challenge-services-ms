@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -16,7 +17,7 @@ return new class extends Migration
         }
 
         Schema::create('service_order_services', function (Blueprint $table) {
-            $table->uuid('id')->primary();
+            $table->uuid('id')->default(DB::raw('(UUID())'))->primary();
             $table->uuid('service_order_id');
             $table->uuid('service_id');
             $table->foreign('service_id')->references('id')->on('services')->onDelete('cascade');

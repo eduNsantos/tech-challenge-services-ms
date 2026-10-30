@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\UseCases\ServiceOrder\CreateServiceOrderUseCase;
+use App\Application\ServiceOrder\CreateServiceOrderUseCase;
 use Illuminate\Http\Request;
 
 class ServiceOrderController extends Controller

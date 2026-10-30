@@ -1,6 +1,6 @@
 <?php
 
-namespace App\UseCases\ServiceOrder;
+namespace App\Application\ServiceOrder;
 
 use App\Domain\ServiceOrder\ServiceOrder;
 use App\Domain\ServiceOrder\ServiceOrderContract;

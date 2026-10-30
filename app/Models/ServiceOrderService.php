@@ -8,7 +8,12 @@ class ServiceOrderService extends Model
 {
     protected $table = 'service_order_services';
 
+    public $incrementing = false;
+
+    protected $keyType = 'string';
+
     protected $fillable = [
+        'id',
         'service_order_id',
         'service_id',
         'quantity',
