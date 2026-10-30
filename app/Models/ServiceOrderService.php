@@ -16,6 +16,7 @@ class ServiceOrderService extends Model
         'id',
         'service_order_id',
         'service_id',
+        'name',
         'quantity',
         'price',
         'started_at',

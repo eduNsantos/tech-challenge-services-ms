@@ -21,6 +21,7 @@ class ServiceOrderServiceController extends Controller
         $validated = $request->validate([
             'service_order_id' => ['required', 'string'],
             'service_id' => ['required', 'string'],
+            'name' => ['required', 'string', 'max:255'],
             'quantity' => ['required', 'integer', 'min:1'],
             'price' => ['required', 'numeric', 'min:0'],
             'started_at' => ['sometimes', 'nullable', 'date'],

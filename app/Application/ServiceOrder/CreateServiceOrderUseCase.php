@@ -4,6 +4,7 @@ namespace App\Application\ServiceOrder;
 
 use App\Domain\ServiceOrder\ServiceOrder;
 use App\Domain\ServiceOrder\ServiceOrderContract;
+use App\Domain\ServiceOrder\ServiceOrderStatus;
 use DateTimeImmutable;
 use InvalidArgumentException;
 
@@ -19,8 +20,7 @@ class CreateServiceOrderUseCase
         $customerId = trim((string) ($data['customer_id'] ?? ''));
         $vehicleId = trim((string) ($data['vehicle_id'] ?? ''));
         $servicesTotal = (float) ($data['services_total'] ?? 0);
-        $partsTotal = (float) ($data['parts_total'] ?? 0);
-        $status = (string) ($data['status'] ?? 'OPEN');
+        $status = (string) ($data['status'] ?? ServiceOrderStatus::Received->value);
         $creationDate = isset($data['creation_date'])
             ? new DateTimeImmutable($data['creation_date'])
             : new DateTimeImmutable();
@@ -33,17 +33,17 @@ class CreateServiceOrderUseCase
             throw new InvalidArgumentException('The vehicle_id is required.');
         }
 
-        if ($servicesTotal < 0 || $partsTotal < 0) {
-            throw new InvalidArgumentException('The totals cannot be negative.');
+        if ($servicesTotal < 0) {
+            throw new InvalidArgumentException('The services_total cannot be negative.');
         }
 
         $serviceOrder = ServiceOrder::create(
             $customerId,
             $vehicleId,
             $servicesTotal,
-            $partsTotal,
             $status,
             $creationDate,
+            $data['id'] ?? null,
         );
 
         return $this->serviceOrderRepository->save($serviceOrder);

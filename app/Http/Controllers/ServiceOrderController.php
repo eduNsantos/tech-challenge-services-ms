@@ -18,8 +18,7 @@ class ServiceOrderController extends Controller
             'customer_id' => ['required', 'string'],
             'vehicle_id' => ['required', 'string'],
             'services_total' => ['required', 'numeric', 'min:0'],
-            'parts_total' => ['required', 'numeric', 'min:0'],
-            'status' => ['sometimes', 'string', 'in:OPEN,IN_PROGRESS,WAITING,COMPLETED,CANCELED'],
+            'status' => ['sometimes', 'string', 'in:recebida,em_diagnostico,aguardando_aprovacao,em_execucao,finalizada,entregue'],
             'creation_date' => ['sometimes', 'date'],
         ]);
 

@@ -3,16 +3,18 @@
 namespace App\Domain\ServiceOrder;
 
 use DateTimeImmutable;
+use DomainException;
+use Illuminate\Support\Str;
+use InvalidArgumentException;
 
 final class ServiceOrder
 {
     public function __construct(
+        private readonly string $id,
         private readonly string $customerId,
         private readonly string $vehicleId,
-        private readonly string $status,
+        private ServiceOrderStatus $status,
         private readonly float $servicesTotal,
-        private readonly float $partsTotal,
-        private readonly float $totalBudget,
         private readonly DateTimeImmutable $creationDate,
     ) {
     }
@@ -21,35 +23,44 @@ final class ServiceOrder
         string $customerId,
         string $vehicleId,
         float $servicesTotal,
-        float $partsTotal,
-        ?string $status = 'OPEN',
+        ?string $status = null,
         ?DateTimeImmutable $creationDate = null,
+        ?string $id = null,
     ): self {
-        $normalizedStatus = strtoupper((string) $status);
-
         if (trim($customerId) === '') {
-            throw new \InvalidArgumentException('customer_id is required.');
+            throw new InvalidArgumentException('customer_id is required.');
         }
 
         if (trim($vehicleId) === '') {
-            throw new \InvalidArgumentException('vehicle_id is required.');
+            throw new InvalidArgumentException('vehicle_id is required.');
         }
 
-        if (! in_array($normalizedStatus, ['OPEN', 'IN_PROGRESS', 'WAITING', 'COMPLETED', 'CANCELED'], true)) {
-            throw new \InvalidArgumentException('Invalid service order status.');
+        if ($servicesTotal < 0) {
+            throw new InvalidArgumentException('The services_total cannot be negative.');
         }
-
-        $totalBudget = $servicesTotal + $partsTotal;
 
         return new self(
-            $customerId,
-            $vehicleId,
-            $normalizedStatus,
+            $id !== null && trim($id) !== '' ? trim($id) : Str::uuid()->toString(),
+            trim($customerId),
+            trim($vehicleId),
+            $status === null || $status === '' ? ServiceOrderStatus::Received : ServiceOrderStatus::fromInput($status),
             $servicesTotal,
-            $partsTotal,
-            $totalBudget,
             $creationDate ?? new DateTimeImmutable(),
         );
+    }
+
+    public function transitionTo(ServiceOrderStatus $next): void
+    {
+        if (! $this->status->canTransitionTo($next)) {
+            throw new DomainException("Cannot change status from {$this->status->value} to {$next->value}.");
+        }
+
+        $this->status = $next;
+    }
+
+    public function id(): string
+    {
+        return $this->id;
     }
 
     public function customerId(): string
@@ -62,7 +73,7 @@ final class ServiceOrder
         return $this->vehicleId;
     }
 
-    public function status(): string
+    public function status(): ServiceOrderStatus
     {
         return $this->status;
     }
@@ -70,16 +81,6 @@ final class ServiceOrder
     public function servicesTotal(): float
     {
         return $this->servicesTotal;
-    }
-
-    public function partsTotal(): float
-    {
-        return $this->partsTotal;
-    }
-
-    public function totalBudget(): float
-    {
-        return $this->totalBudget;
     }
 
     public function creationDate(): DateTimeImmutable
@@ -90,12 +91,11 @@ final class ServiceOrder
     public function toArray(): array
     {
         return [
+            'id' => $this->id,
             'customer_id' => $this->customerId,
             'vehicle_id' => $this->vehicleId,
-            'status' => $this->status,
+            'status' => $this->status->value,
             'services_total' => $this->servicesTotal,
-            'parts_total' => $this->partsTotal,
-            'total_budget' => $this->totalBudget,
             'creation_date' => $this->creationDate->format('Y-m-d H:i:s'),
         ];
     }

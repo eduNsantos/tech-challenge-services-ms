@@ -59,6 +59,8 @@ class CreateServiceOrderServiceUseCase
             $finishedAt,
             $startedUserId,
             $finishedUserId,
+            $data['id'] ?? null,
+            (string) ($data['name'] ?? ''),
         );
 
         return $this->serviceOrderServiceRepository->save($serviceOrderService);

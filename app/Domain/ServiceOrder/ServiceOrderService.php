@@ -3,6 +3,7 @@
 namespace App\Domain\ServiceOrder;
 
 use DateTimeImmutable;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 final class ServiceOrderService
@@ -16,6 +17,8 @@ final class ServiceOrderService
         private readonly ?DateTimeImmutable $finishedAt,
         private readonly ?string $startedUserId,
         private readonly ?string $finishedUserId,
+        private readonly string $id,
+        private readonly string $name,
     ) {
     }
 
@@ -28,6 +31,8 @@ final class ServiceOrderService
         ?DateTimeImmutable $finishedAt = null,
         ?string $startedUserId = null,
         ?string $finishedUserId = null,
+        ?string $id = null,
+        string $name = '',
     ): self {
         $normalizedServiceOrderId = trim($serviceOrderId);
         $normalizedServiceId = trim($serviceId);
@@ -61,7 +66,19 @@ final class ServiceOrderService
             $finishedAt,
             $startedUserId !== null ? trim($startedUserId) : null,
             $finishedUserId !== null ? trim($finishedUserId) : null,
+            $id !== null && trim($id) !== '' ? trim($id) : Str::uuid()->toString(),
+            trim($name),
         );
+    }
+
+    public function id(): string
+    {
+        return $this->id;
+    }
+
+    public function name(): string
+    {
+        return $this->name;
     }
 
     public function serviceOrderId(): string
@@ -112,6 +129,8 @@ final class ServiceOrderService
     public function toArray(): array
     {
         return [
+            'id' => $this->id,
+            'name' => $this->name,
             'service_order_id' => $this->serviceOrderId,
             'service_id' => $this->serviceId,
             'quantity' => $this->quantity,

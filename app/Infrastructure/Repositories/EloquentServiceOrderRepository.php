@@ -10,15 +10,16 @@ class EloquentServiceOrderRepository implements ServiceOrderContract
 {
     public function save(ServiceOrder $serviceOrder): ServiceOrder
     {
-        ServiceOrderModel::query()->create([
-            'customer_id' => $serviceOrder->customerId(),
-            'vehicle_id' => $serviceOrder->vehicleId(),
-            'status' => $serviceOrder->status(),
-            'services_total' => $serviceOrder->servicesTotal(),
-            'parts_total' => $serviceOrder->partsTotal(),
-            'total_budget' => $serviceOrder->totalBudget(),
-            'creation_date' => $serviceOrder->creationDate()->format('Y-m-d H:i:s'),
-        ]);
+        ServiceOrderModel::query()->updateOrCreate(
+            ['id' => $serviceOrder->id()],
+            [
+                'customer_id' => $serviceOrder->customerId(),
+                'vehicle_id' => $serviceOrder->vehicleId(),
+                'status' => $serviceOrder->status()->value,
+                'services_total' => $serviceOrder->servicesTotal(),
+                'creation_date' => $serviceOrder->creationDate()->format('Y-m-d H:i:s'),
+            ],
+        );
 
         return $serviceOrder;
     }
