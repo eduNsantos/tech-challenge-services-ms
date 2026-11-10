@@ -9,6 +9,19 @@ Microsserviço de execução dos serviços da O.S. (status, início e fim de cad
 
 O evento de aprovação/rejeição usa o contrato `ServiceOrderApprovalChanged` na mesma fila FIFO de criação (`MessageGroupId` = id da O.S.). Isso mantém a decisão atrás da criação para cada ordem. Aprovação sincroniza para `em_execucao` e rejeição para `em_diagnostico`; o MS publica a mudança de status na fila de retorno como nos demais fluxos.
 
+## Infraestrutura
+
+O Terraform em `infra/` consulta a VPC `main` e as subnets `sub_a`/`sub_b` do
+repositório Kubernetes com data sources. O RDS do MS usa essa VPC, não é
+publicamente acessível e permite MySQL somente a partir do CIDR da VPC.
+
+O RDS atual está na VPC antiga. A próxima aplicação do Terraform substituirá o
+banco e removerá os recursos de rede exclusivos do MS; os dados não são
+migrados para o novo RDS. Não aplique antes de revisar o plano e confirmar que
+o conteúdo do banco antigo pode ser descartado. Após a substituição, atualize o
+GitHub Actions Secret `DB_HOST` com o endpoint novo e confirme que
+`DB_USERNAME`/`DB_PASSWORD` correspondem ao RDS criado antes do deploy.
+
 ## Deploy no EKS
 
 O workflow `.github/workflows/ci-cd.yml` usa GitHub Actions Secrets para o
@@ -26,9 +39,20 @@ namespace ou ServiceAccount; substitua esse acesso por IRSA ou EKS Pod Identity
 com uma role dedicada antes de produção. Mantenha credenciais do runner nos
 GitHub Actions Secrets e não as injete nos Secrets dos Pods.
 
-## Risco conhecido (ambiente de lab)
+Os três workflows de build/deploy aceitam execução manual (`workflow_dispatch`)
+na branch selecionada:
 
-O RDS em `infra/rds.tf` é `publicly_accessible` e o security group libera a porta 3306 para `0.0.0.0/0`, porque ele fica numa VPC separada da do EKS. Isso foi mantido de propósito para o lab e **não deve ir para produção**. Para produção: RDS privado, VPC peering (ou Transit Gateway) com o EKS e ingress da 3306 restrito ao security group/CIDR do cluster. Troque também a senha padrão `db_password` em `infra/variables.tf`.
+- `tech-challenge-application`: execute o build da branch; ele publica a tag da
+  branch e o SHA, sem atualizar `latest` nem disparar deploy automático fora de
+  `main`.
+- `tech-challenge-services-ms`: a execução manual testa, publica a imagem pelo
+  SHA e faz deploy dessa versão no EKS compartilhado.
+- `tech-challenge-kubernetes`: execute o deploy manual informando em `image_tag`
+  a tag da imagem (ou SHA). Mantenha `enable_services_ms=false` até o MS estar
+  implantado e saudável.
+
+Os deploys manuais do Services MS e Kubernetes alteram o cluster EKS
+compartilhado; revise a branch e a tag antes de iniciá-los.
 
 ---
 

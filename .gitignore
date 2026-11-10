@@ -29,7 +29,6 @@ terraform/
 # Terraform
 auto-generated
 infra/.terraform/
-infra/.terraform.lock.hcl
 infra/*.tfstate
 infra/*.tfstate.*
 infra/*.backup

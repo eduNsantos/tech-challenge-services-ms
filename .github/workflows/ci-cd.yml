@@ -44,7 +44,7 @@ jobs:
 
   build:
     name: Build and push image
-    needs: test
+    needs: [test, terraform]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -58,13 +58,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set image tags
+        id: tags
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          {
+            echo 'tags<<EOF'
+            echo "${IMAGE}:${SHA}"
+            if [ "$REF" = "refs/heads/main" ]; then
+              echo "${IMAGE}:latest"
+            fi
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ github.sha }}
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -143,3 +157,20 @@ jobs:
           for d in services-ms-web services-ms-consumer services-ms-outbox; do
             kubectl rollout status "deployment/${d}" -n "$NAMESPACE" --timeout=300s
           done
+
+  terraform:
+    name: Terraform validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Validate infrastructure configuration
+        working-directory: infra
+        run: |
+          terraform fmt -check *.tf
+          terraform init -backend=false -input=false
+          terraform validate
