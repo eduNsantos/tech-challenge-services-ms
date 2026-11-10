@@ -38,5 +38,5 @@ infra/*.backup
 *.tfstate
 *.tfstate.*
 
-# Ignore Terraform infrastructure folder
-infra/
+*tfvars*
+k8s/

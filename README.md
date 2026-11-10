@@ -2,10 +2,29 @@
 
 Microsserviço de execução dos serviços da O.S. (status, início e fim de cada serviço).
 
-- Entrada: fila SQS FIFO `service-orders-created` (comando `php artisan sqs:consume-service-orders`).
+- Entrada: fila SQS FIFO `service-orders-created` (comando `php artisan sqs:consume-service-orders`), com eventos de criação e aprovação/rejeição ordenados por O.S.
 - Saída: fila SQS FIFO `service-order-status-changed`, via outbox (comando `php artisan outbox:publish`).
 - API (JWT HS256, mesmo `JWT_SECRET` do monólito): `GET /service-orders/{id}`, `PATCH /service-orders/{id}/status`, `POST /service-orders/{id}/services/{sid}/start|finish`.
-- Infra em `infra/` (Terraform) e manifests em `k8s/`.
+- O workflow deste repositório publica a imagem e implanta os manifests em `k8s/`; a infraestrutura AWS é gerenciada separadamente.
+
+O evento de aprovação/rejeição usa o contrato `ServiceOrderApprovalChanged` na mesma fila FIFO de criação (`MessageGroupId` = id da O.S.). Isso mantém a decisão atrás da criação para cada ordem. Aprovação sincroniza para `em_execucao` e rejeição para `em_diagnostico`; o MS publica a mudança de status na fila de retorno como nos demais fluxos.
+
+## Deploy no EKS
+
+O workflow `.github/workflows/ci-cd.yml` usa GitHub Actions Secrets para o
+deploy. Configure `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e
+`AWS_SESSION_TOKEN` para autenticar o runner no EKS; esses valores são usados
+somente pelo runner e não devem ser incluídos nos Secrets dos Pods. Para a
+aplicação, o workflow usa `DB_HOST`, `SQS_SERVICE_ORDERS_CREATED_URL`,
+`SQS_SERVICE_ORDER_STATUS_CHANGED_URL`, `APP_KEY`, `DB_USERNAME`,
+`DB_PASSWORD` e `JWT_SECRET`. `GHCR_USERNAME` e `GHCR_TOKEN` são necessários
+para pull da imagem privada.
+
+Os Pods precisam de uma identidade IAM para acessar SQS. O ambiente Learner Lab
+usa temporariamente a role dos nodes do EKS, que não isola as permissões por
+namespace ou ServiceAccount; substitua esse acesso por IRSA ou EKS Pod Identity
+com uma role dedicada antes de produção. Mantenha credenciais do runner nos
+GitHub Actions Secrets e não as injete nos Secrets dos Pods.
 
 ## Risco conhecido (ambiente de lab)
 

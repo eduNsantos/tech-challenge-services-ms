@@ -18,11 +18,10 @@ class ProcessServiceOrderCreated
     public function __construct(
         private readonly ServiceOrderContract $serviceOrderRepository,
         private readonly ServiceOrderServiceContract $serviceOrderServiceRepository,
-    ) {
-    }
+    ) {}
 
     /**
-     * @return bool false when the event was already processed.
+     * @return bool false when the event was already processed or the order already exists.
      *
      * @throws InvalidArgumentException when the payload is invalid.
      */
@@ -53,12 +52,20 @@ class ProcessServiceOrderCreated
         $items = array_map(fn ($service) => $this->buildService($serviceOrder->id(), $service), $services);
 
         try {
-            DB::transaction(function () use ($eventId, $serviceOrder, $items) {
+            $orderAlreadyExists = false;
+
+            DB::transaction(function () use ($eventId, $serviceOrder, $items, &$orderAlreadyExists) {
                 // A chave primária de processed_messages garante a idempotência.
                 DB::table('processed_messages')->insert([
                     'event_id' => $eventId,
                     'type' => self::TYPE,
                 ]);
+
+                if (DB::table('service_orders')->where('id', $serviceOrder->id())->lockForUpdate()->first()) {
+                    $orderAlreadyExists = true;
+
+                    return;
+                }
 
                 $this->serviceOrderRepository->save($serviceOrder);
 
@@ -70,7 +77,7 @@ class ProcessServiceOrderCreated
             return false;
         }
 
-        return true;
+        return ! $orderAlreadyExists;
     }
 
     private function buildService(string $serviceOrderId, mixed $service): ServiceOrderService

@@ -19,7 +19,7 @@ enum ServiceOrderStatus: string
         return match ($this) {
             self::Received => [self::InDiagnosis, self::AwaitingApproval],
             self::InDiagnosis => [self::AwaitingApproval],
-            self::AwaitingApproval => [self::InProgress],
+            self::AwaitingApproval => [self::InDiagnosis, self::InProgress],
             self::InProgress => [self::Finished],
             self::Finished => [self::Delivered],
             self::Delivered => [],

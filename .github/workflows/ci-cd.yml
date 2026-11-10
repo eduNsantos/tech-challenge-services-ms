@@ -42,26 +42,9 @@ jobs:
       - name: Run tests
         run: php artisan test
 
-  terraform:
-    name: Terraform validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.9.8"
-
-      - name: Validate
-        working-directory: infra
-        run: |
-          terraform fmt -check -recursive
-          terraform init -backend=false -input=false
-          terraform validate
-
   build:
     name: Build and push image
-    needs: [test, terraform]
+    needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -121,9 +104,6 @@ jobs:
           DB_USERNAME: ${{ secrets.DB_USERNAME }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
@@ -139,9 +119,6 @@ jobs:
             --from-literal=DB_USERNAME="$DB_USERNAME" \
             --from-literal=DB_PASSWORD="$DB_PASSWORD" \
             --from-literal=JWT_SECRET="$JWT_SECRET" \
-            --from-literal=AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-            --from-literal=AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-            --from-literal=AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN" \
             --dry-run=client -o yaml | kubectl apply -f -
 
           kubectl create secret docker-registry ghcr-secret \

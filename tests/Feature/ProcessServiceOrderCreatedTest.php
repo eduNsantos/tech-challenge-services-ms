@@ -53,6 +53,30 @@ class ProcessServiceOrderCreatedTest extends TestCase
         $this->assertSame(1, DB::table('service_order_services')->count());
     }
 
+    public function test_new_event_for_existing_order_does_not_overwrite_current_state(): void
+    {
+        $handler = app(ProcessServiceOrderCreated::class);
+        $original = $this->payload();
+        $handler->handle($original);
+
+        DB::table('service_orders')
+            ->where('id', $original['service_order']['id'])
+            ->update(['status' => 'em_execucao']);
+
+        $backfill = $this->payload([
+            'event_id' => 'b1f1b1c0-0000-4000-8000-000000000002',
+            'service_order' => ['status' => 'recebida'],
+        ]);
+
+        $this->assertFalse($handler->handle($backfill));
+        $this->assertSame(
+            'em_execucao',
+            DB::table('service_orders')->where('id', $original['service_order']['id'])->value('status'),
+        );
+        $this->assertSame(1, DB::table('service_order_services')->count());
+        $this->assertDatabaseHas('processed_messages', ['event_id' => $backfill['event_id']]);
+    }
+
     public function test_invalid_payload_throws_and_persists_nothing(): void
     {
         try {
