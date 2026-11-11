@@ -11,6 +11,14 @@ resource "aws_security_group" "rds" {
     cidr_blocks = [data.aws_vpc.kubernetes.cidr_block]
   }
 
+  ingress {
+    description = "Public MySQL access for the lab"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -36,7 +44,7 @@ resource "aws_db_instance" "db" {
   password                = var.db_password
   db_subnet_group_name    = aws_db_subnet_group.this.name
   vpc_security_group_ids  = [aws_security_group.rds.id]
-  publicly_accessible     = false
+  publicly_accessible     = true
   skip_final_snapshot     = true
   multi_az                = false
   backup_retention_period = 0

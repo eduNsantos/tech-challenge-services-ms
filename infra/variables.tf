@@ -29,3 +29,8 @@ variable "db_name" {
   type        = string
   default     = "services_ms"
 }
+
+variable "jwt_secret" {
+  description = "secret do jwt"
+  type = string
+}
