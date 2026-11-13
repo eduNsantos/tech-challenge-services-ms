@@ -2,14 +2,57 @@
 
 Microsserviço de execução dos serviços da O.S. (status, início e fim de cada serviço).
 
-- Entrada: fila SQS FIFO `service-orders-created` (comando `php artisan sqs:consume-service-orders`).
+- Entrada: fila SQS FIFO `service-orders-created` (comando `php artisan sqs:consume-service-orders`), com eventos de criação e aprovação/rejeição ordenados por O.S.
 - Saída: fila SQS FIFO `service-order-status-changed`, via outbox (comando `php artisan outbox:publish`).
 - API (JWT HS256, mesmo `JWT_SECRET` do monólito): `GET /service-orders/{id}`, `PATCH /service-orders/{id}/status`, `POST /service-orders/{id}/services/{sid}/start|finish`.
-- Infra em `infra/` (Terraform) e manifests em `k8s/`.
+- O workflow deste repositório publica a imagem e implanta os manifests em `k8s/`; a infraestrutura AWS é gerenciada separadamente.
 
-## Risco conhecido (ambiente de lab)
+O evento de aprovação/rejeição usa o contrato `ServiceOrderApprovalChanged` na mesma fila FIFO de criação (`MessageGroupId` = id da O.S.). Isso mantém a decisão atrás da criação para cada ordem. Aprovação sincroniza para `em_execucao` e rejeição para `em_diagnostico`; o MS publica a mudança de status na fila de retorno como nos demais fluxos.
 
-O RDS em `infra/rds.tf` é `publicly_accessible` e o security group libera a porta 3306 para `0.0.0.0/0`, porque ele fica numa VPC separada da do EKS. Isso foi mantido de propósito para o lab e **não deve ir para produção**. Para produção: RDS privado, VPC peering (ou Transit Gateway) com o EKS e ingress da 3306 restrito ao security group/CIDR do cluster. Troque também a senha padrão `db_password` em `infra/variables.tf`.
+## Infraestrutura
+
+O Terraform em `infra/` consulta a VPC `main` e as subnets `sub_a`/`sub_b` do
+repositório Kubernetes com data sources. O RDS do MS usa essa VPC, não é
+publicamente acessível e permite MySQL somente a partir do CIDR da VPC.
+
+O RDS atual está na VPC antiga. A próxima aplicação do Terraform substituirá o
+banco e removerá os recursos de rede exclusivos do MS; os dados não são
+migrados para o novo RDS. Não aplique antes de revisar o plano e confirmar que
+o conteúdo do banco antigo pode ser descartado. Após a substituição, atualize o
+GitHub Actions Secret `DB_HOST` com o endpoint novo e confirme que
+`DB_USERNAME`/`DB_PASSWORD` correspondem ao RDS criado antes do deploy.
+
+## Deploy no EKS
+
+O workflow `.github/workflows/ci-cd.yml` usa GitHub Actions Secrets para o
+deploy. Configure `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e
+`AWS_SESSION_TOKEN` para autenticar o runner no EKS; esses valores são usados
+somente pelo runner e não devem ser incluídos nos Secrets dos Pods. Para a
+aplicação, o workflow usa `DB_HOST`, `SQS_SERVICE_ORDERS_CREATED_URL`,
+`SQS_SERVICE_ORDER_STATUS_CHANGED_URL`, `APP_KEY`, `DB_USERNAME`,
+`DB_PASSWORD` e `JWT_SECRET`. `GHCR_USERNAME` e `GHCR_TOKEN` são necessários
+para pull da imagem privada.
+
+Os Pods precisam de uma identidade IAM para acessar SQS. O ambiente Learner Lab
+usa temporariamente a role dos nodes do EKS, que não isola as permissões por
+namespace ou ServiceAccount; substitua esse acesso por IRSA ou EKS Pod Identity
+com uma role dedicada antes de produção. Mantenha credenciais do runner nos
+GitHub Actions Secrets e não as injete nos Secrets dos Pods.
+
+Os três workflows de build/deploy aceitam execução manual (`workflow_dispatch`)
+na branch selecionada:
+
+- `tech-challenge-application`: execute o build da branch; ele publica a tag da
+  branch e o SHA, sem atualizar `latest` nem disparar deploy automático fora de
+  `main`.
+- `tech-challenge-services-ms`: a execução manual testa, publica a imagem pelo
+  SHA e faz deploy dessa versão no EKS compartilhado.
+- `tech-challenge-kubernetes`: execute o deploy manual informando em `image_tag`
+  a tag da imagem (ou SHA). Mantenha `enable_services_ms=false` até o MS estar
+  implantado e saudável.
+
+Os deploys manuais do Services MS e Kubernetes alteram o cluster EKS
+compartilhado; revise a branch e a tag antes de iniciá-los.
 
 ---
 

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Application\ServiceOrder\ProcessServiceOrderApprovalChanged;
 use App\Application\ServiceOrder\ProcessServiceOrderCreated;
 use Aws\Sqs\SqsClient;
 use Illuminate\Console\Command;
@@ -13,10 +14,12 @@ class ConsumeServiceOrdersCreated extends Command
 {
     protected $signature = 'sqs:consume-service-orders {--once : Process a single poll and exit}';
 
-    protected $description = 'Consume ServiceOrderCreated events from the SQS FIFO queue';
+    protected $description = 'Consume service order creation and approval events from the SQS FIFO queue';
 
-    public function handle(ProcessServiceOrderCreated $processor): int
-    {
+    public function handle(
+        ProcessServiceOrderCreated $processor,
+        ProcessServiceOrderApprovalChanged $approvalProcessor,
+    ): int {
         $url = config('services.sqs.service_orders_created_url');
 
         if (! $url) {
@@ -35,22 +38,34 @@ class ConsumeServiceOrdersCreated extends Command
             ]);
 
             foreach ($result->get('Messages') ?? [] as $message) {
-                $this->process($client, $url, $processor, $message);
+                $this->process($client, $url, $processor, $approvalProcessor, $message);
             }
         } while (! $this->option('once'));
 
         return self::SUCCESS;
     }
 
-    private function process(SqsClient $client, string $url, ProcessServiceOrderCreated $processor, array $message): void
-    {
+    private function process(
+        SqsClient $client,
+        string $url,
+        ProcessServiceOrderCreated $processor,
+        ProcessServiceOrderApprovalChanged $approvalProcessor,
+        array $message,
+    ): void {
         try {
             $payload = json_decode($message['Body'], true, 512, JSON_THROW_ON_ERROR);
-            $processed = $processor->handle($payload);
+            $processed = match ($payload['type'] ?? null) {
+                ProcessServiceOrderCreated::TYPE => $processor->handle($payload),
+                ProcessServiceOrderApprovalChanged::TYPE => $approvalProcessor->handle($payload),
+                default => throw new InvalidArgumentException('Unsupported service order event type.'),
+            };
             $this->info(($processed ? 'Processed ' : 'Duplicate ').($payload['event_id'] ?? ''));
         } catch (JsonException|InvalidArgumentException $e) {
             // Mensagem inválida nunca terá sucesso: não apaga, e o redrive a envia para a DLQ.
-            logger()->error('Invalid ServiceOrderCreated message', ['error' => $e->getMessage(), 'message_id' => $message['MessageId'] ?? null]);
+            logger()->error('Invalid service order event message', [
+                'error' => $e->getMessage(),
+                'message_id' => $message['MessageId'] ?? null,
+            ]);
 
             return;
         } catch (Throwable $e) {
