@@ -10,7 +10,7 @@ data:
   LOG_CHANNEL: "stderr"
   DB_CONNECTION: "mysql"
   # Preencher com `terraform output rds_endpoint` (infra/)
-  DB_HOST: "<RDS_ENDPOINT>"
+  DB_HOST: "services-ms-mysql.cr4orp1dktpy.us-east-1.rds.amazonaws.com"
   DB_PORT: "3306"
   DB_DATABASE: "services_ms"
   QUEUE_CONNECTION: "sync"
@@ -18,5 +18,5 @@ data:
   SESSION_DRIVER: "array"
   AWS_DEFAULT_REGION: "us-east-1"
   # Preencher com `terraform output` (infra/)
-  SQS_SERVICE_ORDERS_CREATED_URL: "<sqs_service_orders_created_url>"
-  SQS_SERVICE_ORDER_STATUS_CHANGED_URL: "<sqs_service_order_status_changed_url>"
+  SQS_SERVICE_ORDERS_CREATED_URL: "https://sqs.us-east-1.amazonaws.com/123456789012/service-orders-created"
+  SQS_SERVICE_ORDER_STATUS_CHANGED_URL: "https://sqs.us-east-1.amazonaws.com/123456789012/service-order-status-changed"
