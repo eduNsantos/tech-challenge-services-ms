@@ -11,6 +11,12 @@ variable "project_name" {
   default     = "services-ms"
 }
 
+variable "enable_pod_identity" {
+  description = "Provisiona o agente EKS Pod Identity e as roles dedicadas aos workers"
+  type        = bool
+  default     = false
+}
+
 variable "db_username" {
   description = "Usuário do banco de dados"
   type        = string
