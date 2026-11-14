@@ -211,12 +211,87 @@ jobs:
 
       - name: Run migrations
         run: |
+          set -euo pipefail
+
+          diagnose_migration() {
+            echo "=== Estado do Job de migracao ==="
+            kubectl get job services-ms-migrate -n "$NAMESPACE" \
+              -o 'custom-columns=NAME:.metadata.name,ACTIVE:.status.active,SUCCEEDED:.status.succeeded,FAILED:.status.failed,CONDITIONS:.status.conditions[*].type,REASONS:.status.conditions[*].reason' || true
+            echo "=== Eventos do Job (motivos, sem mensagens) ==="
+            kubectl get events -n "$NAMESPACE" \
+              --field-selector 'involvedObject.kind=Job,involvedObject.name=services-ms-migrate' \
+              --sort-by=.lastTimestamp \
+              -o 'custom-columns=TYPE:.type,REASON:.reason,COUNT:.count' || true
+            echo "=== Pods e estado dos containers ==="
+            kubectl get pods -n "$NAMESPACE" -l job-name=services-ms-migrate \
+              -o 'custom-columns=NAME:.metadata.name,PHASE:.status.phase,WAITING:.status.containerStatuses[*].state.waiting.reason,TERMINATED:.status.containerStatuses[*].state.terminated.reason,EXIT_CODE:.status.containerStatuses[*].state.terminated.exitCode,LAST_TERMINATED:.status.containerStatuses[*].lastState.terminated.reason,LAST_EXIT_CODE:.status.containerStatuses[*].lastState.terminated.exitCode,RESTARTS:.status.containerStatuses[*].restartCount' || true
+
+            if ! pods=$(kubectl get pods -n "$NAMESPACE" -l job-name=services-ms-migrate -o jsonpath='{.items[*].metadata.name}'); then
+              echo "Nao foi possivel listar os pods do Job."
+              return
+            fi
+            if [ -z "$pods" ]; then
+              echo "Nenhum pod encontrado para o Job."
+              return
+            fi
+
+            for pod in $pods; do
+              echo "=== Eventos do pod $pod (motivos, sem mensagens) ==="
+              kubectl get events -n "$NAMESPACE" \
+                --field-selector "involvedObject.kind=Pod,involvedObject.name=$pod" \
+                --sort-by=.lastTimestamp \
+                -o 'custom-columns=TYPE:.type,REASON:.reason,COUNT:.count' || true
+
+              for attempt in current previous; do
+                echo "=== Diagnostico dos logs $attempt do pod $pod ==="
+                args=()
+                if [ "$attempt" = previous ]; then args+=(--previous); fi
+                if ! kubectl logs "$pod" -n "$NAMESPACE" -c migrate --tail=200 "${args[@]}" 2>/dev/null |
+                  python3 -c '
+          import re
+          import sys
+
+          log = sys.stdin.read()
+          checks = [
+              ("Autenticacao recusada pelo banco", r"access denied|password authentication failed|authentication failed|\b1045\b"),
+              ("Banco de dados inexistente", r"unknown database|database .{0,80} does not exist|\b1049\b"),
+              ("Falha de resolucao do host", r"getaddrinfo|name or service not known|temporary failure in name resolution|could not translate host name|nodename nor servname"),
+              ("Conexao recusada", r"connection refused|\b2003\b"),
+              ("Timeout ou rede inacessivel", r"timed? out|timeout|network is unreachable|no route to host"),
+              ("Falha TLS ou certificado", r"ssl connection error|tls.*(?:error|failed)|certificate verify failed"),
+              ("Driver do banco indisponivel", r"could not find driver"),
+          ]
+          states = sorted(set(re.findall(r"SQLSTATE\[([A-Za-z0-9]{5})\]", log, re.I)))
+          codes = sorted(set(re.findall(r"\[(1045|1049|2002|2003)\]", log)))
+          if states:
+              print("SQLSTATE:", ", ".join(states))
+          if codes:
+              print("Codigos do banco:", ", ".join(codes))
+          found = False
+          for label, pattern in checks:
+              if re.search(pattern, log, re.I):
+                  print(label)
+                  found = True
+          if not log:
+              print("Log vazio.")
+          elif not found and not states and not codes:
+              print("Nenhum padrao conhecido; consulte os logs completos por canal seguro.")
+          '; then
+                  echo "Logs $attempt indisponiveis para o pod $pod."
+                fi
+              done
+            done
+          }
+
           kubectl delete job services-ms-migrate -n "$NAMESPACE" --ignore-not-found
           sed "s|${IMAGE}:latest|${IMAGE}:${GITHUB_SHA}|" k8s/02-app/migrate-job.yaml | kubectl apply -f -
 
-          kubectl wait --for=condition=complete job/services-ms-migrate \
-            -n "$NAMESPACE" --timeout=300s \
-            || { kubectl logs job/services-ms-migrate -n "$NAMESPACE" --tail=100; exit 1; }
+          if ! kubectl wait --for=condition=complete job/services-ms-migrate \
+            -n "$NAMESPACE" --timeout=300s; then
+            echo "Migracao nao concluiu; coletando diagnostico sem valores de Secrets."
+            diagnose_migration
+            exit 1
+          fi
 
       - name: Deploy application
         run: |
