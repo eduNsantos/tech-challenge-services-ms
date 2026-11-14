@@ -32,5 +32,5 @@ variable "db_name" {
 
 variable "jwt_secret" {
   description = "secret do jwt"
-  type = string
+  type        = string
 }
