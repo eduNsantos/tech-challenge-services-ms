@@ -15,6 +15,7 @@ spec:
       labels:
         app: services-ms-consumer
     spec:
+      serviceAccountName: services-ms-consumer
       imagePullSecrets:
         - name: ghcr-secret
       containers:
@@ -55,6 +56,7 @@ spec:
       labels:
         app: services-ms-outbox
     spec:
+      serviceAccountName: services-ms-outbox
       imagePullSecrets:
         - name: ghcr-secret
       containers:
