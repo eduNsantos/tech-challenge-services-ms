@@ -55,9 +55,9 @@ resource "aws_sqs_queue_redrive_allow_policy" "dlq" {
 }
 
 resource "aws_sqs_queue_policy" "eks_node_role" {
-  for_each = aws_sqs_queue.main
+  for_each = local.fifo_queues
 
-  queue_url = each.value.id
+  queue_url = aws_sqs_queue.main[each.key].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -67,7 +67,7 @@ resource "aws_sqs_queue_policy" "eks_node_role" {
         AWS = data.aws_eks_node_group.main.node_role_arn
       }
       Action   = local.services_ms_sqs_actions
-      Resource = each.value.arn
+      Resource = aws_sqs_queue.main[each.key].arn
     }]
   })
 }
