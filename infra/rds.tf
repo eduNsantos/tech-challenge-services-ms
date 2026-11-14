@@ -1,38 +1,11 @@
-resource "aws_security_group" "rds" {
-  name        = "${var.project_name}-rds-sg"
-  description = "Allow MySQL from the Kubernetes VPC"
-  vpc_id      = data.aws_vpc.kubernetes.id
-
-  ingress {
-    description = "MySQL access from the Kubernetes VPC"
-    from_port   = 3306
-    to_port     = 3306
-    protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.kubernetes.cidr_block]
+data "aws_security_group" "rds" {
+  filter {
+    name   = "tag:Name"
+    values = ["rds"]
   }
-
-  ingress {
-    description = "Public MySQL access for the lab"
-    from_port   = 3306
-    to_port     = 3306
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  lifecycle {
-    create_before_destroy = true
-    ignore_changes        = [description, name, tags]
-  }
-
-  tags = {
-    Name = "${var.project_name}-rds-sg"
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.kubernetes.id]
   }
 }
 
@@ -48,7 +21,7 @@ resource "aws_db_instance" "db" {
   username                = var.db_username
   password                = var.db_password
   db_subnet_group_name    = aws_db_subnet_group.this.name
-  vpc_security_group_ids  = [aws_security_group.rds.id]
+  vpc_security_group_ids  = [data.aws_security_group.rds.id]
   publicly_accessible     = true
   skip_final_snapshot     = true
   multi_az                = false
