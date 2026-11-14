@@ -26,6 +26,11 @@ resource "aws_security_group" "rds" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes = [description, name, tags]
+  }
+
   tags = {
     Name = "${var.project_name}-rds-sg"
   }
