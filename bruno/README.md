@@ -62,7 +62,7 @@ Edite `collection.bru` para configurar:
 
 ## 📊 Status (somente leitura no MS)
 
-`recebida`, `em_diagnostico`, `aguardando_aprovacao`, `em_execucao`, `finalizada`, `entregue`. Serviços só podem ser iniciados em `em_execucao`. Concluir o último serviço publica `ServiceOrderExecutionFinished`, e a aplicação muda a O.S. para `finalizada`.
+`recebida`, `em_diagnostico`, `aguardando_aprovacao`, `em_execucao`, `finalizada`, `entregue`. Serviços só podem ser iniciados em `em_execucao`. Cada `start`/`finish` publica `ServiceOrderServiceStarted`/`ServiceOrderServiceFinished`, e a aplicação grava o início/fim no serviço da O.S. Concluir o último serviço publica `ServiceOrderExecutionFinished`, e a aplicação muda a O.S. para `finalizada`.
 
 ## ⚠️ Tratamento de Erros
 
