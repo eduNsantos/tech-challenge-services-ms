@@ -64,3 +64,20 @@ variable "otel_collector_layer_version" {
   type        = string
   default     = "0_24_0"
 }
+
+variable "dlq_redrive_schedule" {
+  description = "Agendamento da Lambda que devolve as mensagens das DLQs da execução para nova tentativa (intervalo entre tentativas)."
+  type        = string
+  default     = "rate(15 minutes)"
+}
+
+variable "dlq_redrive_max_attempts" {
+  description = "Quantas vezes uma mensagem da DLQ volta para a fila de origem antes de ficar para análise manual."
+  type        = number
+  default     = 4
+
+  validation {
+    condition     = var.dlq_redrive_max_attempts >= 1
+    error_message = "dlq_redrive_max_attempts precisa ser pelo menos 1."
+  }
+}

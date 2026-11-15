@@ -41,6 +41,9 @@ return [
         'service_orders_created_url' => env('SQS_SERVICE_ORDERS_CREATED_URL'),
         'service_order_status_changed_url' => env('SQS_SERVICE_ORDER_STATUS_CHANGED_URL'),
         'service_order_execution_url' => env('SQS_SERVICE_ORDER_EXECUTION_URL'),
+        // Nova tentativa das DLQs da execução: {"<url da DLQ>": "<url da fila de origem>"}.
+        'redrive_queues' => json_decode(env('SQS_REDRIVE_QUEUES') ?: '{}', true) ?: [],
+        'redrive_max_attempts' => (int) env('SQS_REDRIVE_MAX_ATTEMPTS', 4),
     ],
 
     'jwt' => [
