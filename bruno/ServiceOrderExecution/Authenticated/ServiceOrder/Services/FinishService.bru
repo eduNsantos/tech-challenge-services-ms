@@ -16,30 +16,23 @@ settings {
 }
 
 docs {
-  # Finish Service Execution
+  # Finalizar serviço
   
-  Marks a service as completed/finished within a service order. This records the finish time.
+  Grava `finished_at` e `finished_user_id` (claim `sub` do JWT) no serviço. Qualquer usuário autenticado pode
+  finalizar; não precisa ser quem iniciou.
   
-  ## Prerequisites
-  - Valid JWT token in `jwtToken` variable
-  - Service Order ID in `serviceOrderId` variable
-  - Service ID in `serviceId` variable
-  - Service must have been started first
-  - User must be the same technician who started the service (or have override permissions)
+  ## Pré-requisitos
+  - JWT emitido pela aplicação na variável `jwtToken`
+  - `serviceOrderId` e `serviceId` (`services[].id`)
+  - Serviço já iniciado
   
-  ## Path Parameters
-  - `serviceOrderId` - UUID of the service order
-  - `serviceId` - UUID of the service within the order
+  ## Eventos publicados
+  - `ServiceOrderServiceFinished` em todo fim
+  - `ServiceOrderExecutionFinished` também no fim do último serviço. A aplicação muda a O.S. para `finalizada`
+    e o novo status volta pela fila. Por isso a resposta imediata ainda mostra `em_execucao`.
   
-  ## Response
-  Returns the updated service order with the service status changed to "FINISHED".
-  
-  ## Notes
-  - Can only finish a service that has been started
-  - Recording the finish time completes time tracking
-  - May trigger downstream events (e.g., outbox messages, SQS notifications)
-  - If all services are finished, the order status may automatically update
-  
-  ## Error Handling
-  - 422: Service not started, already finished, or user permission denied
+  ## Respostas
+  - 200: O.S. atualizada
+  - 404: O.S. ou serviço não encontrado
+  - 422: `The service was not started.` / `The service was already finished.`
 }

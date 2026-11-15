@@ -64,7 +64,8 @@ app/
 database/migrations/                   # service_orders, service_order_services, processed_messages, outbox
 routes/api.php                         # apiPrefix '' → rotas sem /api
 infra/                                 # sqs.tf, rds.tf, vpc.tf, lambda.tf, pod-identity.tf, tests/
-k8s/                                   # 00-namespace, 01-config, 02-app, 03-observability
+k8s/                                   # 00-namespace, 01-config, 02-app (web, migrate, swagger-ui), 03-observability
+openapi.yaml                           # contrato da API; CI gera o ConfigMap services-ms-openapi a partir dele
 otel/lambda-collector.yaml             # config do collector da layer
 scripts/build-lambda.sh                # monta build/lambda (Terraform compacta)
 docs/architecture.png                  # único arquivo de docs; ao mudar o fluxo, avise que o diagrama precisa ser atualizado

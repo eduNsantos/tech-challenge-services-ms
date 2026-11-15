@@ -16,23 +16,23 @@ settings {
 }
 
 docs {
-  # Get Service Order Details
+  # Consultar O.S.
   
-  Retrieves detailed information about a specific service order, including all associated services.
+  Retorna a O.S. (cópia somente leitura da aplicação) com os serviços, os horários e os usuários de início e fim.
   
-  ## Prerequisites
-  - Valid JWT token in `jwtToken` variable
-  - Service Order ID in `serviceOrderId` variable
+  ## Pré-requisitos
+  - JWT emitido pela aplicação na variável `jwtToken`
+  - ID da O.S. na variável `serviceOrderId`
   
-  ## Response
-  Returns the service order object with:
-  - Order basic information
-  - List of services with their statuses
-  - Service execution details (start/finish times, technician info)
+  ## Respostas
+  - 200: `{ "data": { ...O.S., "services": [...] } }`
+  - 401: token ausente, expirado ou inválido
+  - 404: O.S. ainda não importada pela fila `service-orders-created.fifo`
   
-  ## Example
+  ## Exemplo
   ```
-  GET /api/service-orders/550e8400-e29b-41d4-a716-446655440000
+  GET /service-orders/550e8400-e29b-41d4-a716-446655440000
   Authorization: Bearer <jwt_token>
+  Accept: application/json
   ```
 }

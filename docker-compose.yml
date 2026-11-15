@@ -33,6 +33,15 @@ services:
       retries: 20
       start_period: 30s
 
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.17.14
+    ports:
+      - "8083:8080"
+    environment:
+      SWAGGER_JSON: /app/openapi.yaml
+    volumes:
+      - ./openapi.yaml:/app/openapi.yaml:ro
+
   # localstack:
   #   image: localstack/localstack:3
   #   container_name: services-ms-localstack
