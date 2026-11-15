@@ -150,7 +150,8 @@ curl -s "http://$HOST:8081/service-orders/$OS" -H "Authorization: Bearer $TOKEN"
 curl -s -X POST "http://$HOST:8081/service-orders/$OS/services/$SVC/start"  -H "Authorization: Bearer $TOKEN"
 curl -s -X POST "http://$HOST:8081/service-orders/$OS/services/$SVC/finish" -H "Authorization: Bearer $TOKEN"
 
-# 4. Em até ~1 min o publisher envia ExecutionStarted e ExecutionFinished
+# 4. Em até ~1 min o publisher envia ServiceStarted/ServiceFinished (um por serviço) e ExecutionStarted/ExecutionFinished
+#    Na aplicação: GET /api/service-order/$OS mostra services[].started_at / finished_at
 aws logs tail /aws/lambda/services-ms-outbox-publisher --since 5m
 ```
 

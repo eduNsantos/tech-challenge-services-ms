@@ -14,7 +14,12 @@ use Throwable;
  */
 class OutboxPublisher
 {
-    public const SUPPORTED_TYPES = ['ServiceOrderExecutionStarted', 'ServiceOrderExecutionFinished'];
+    public const SUPPORTED_TYPES = [
+        'ServiceOrderServiceStarted',
+        'ServiceOrderServiceFinished',
+        'ServiceOrderExecutionStarted',
+        'ServiceOrderExecutionFinished',
+    ];
 
     private const LOCK_NAME = 'services-ms-outbox-publisher';
 

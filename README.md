@@ -28,7 +28,7 @@ EventBridge rate(1 min) ──> λ services-ms-outbox-publisher ──(lê outbo
 ```
 
 - **Entrada**: `service-orders-created` (criação da O.S.) e `service-order-status-changed` (cada `ServiceOrderStatusChanged` da aplicação).
-- **Saída**: `service-order-execution`, via outbox, com `ServiceOrderExecutionStarted` e `ServiceOrderExecutionFinished`.
+- **Saída**: `service-order-execution`, via outbox, com `ServiceOrderServiceStarted`/`ServiceOrderServiceFinished` (cada serviço) e `ServiceOrderExecutionStarted`/`ServiceOrderExecutionFinished` (O.S.).
 - **API** (JWT HS256, mesmo `JWT_SECRET` do monólito): `GET /service-orders/{id}`, `POST /service-orders/{id}/services/{sid}/start|finish`. Não há rota para alterar o status.
 - O workflow deste repositório publica a imagem e implanta a API pelos manifests em `k8s/`. Os consumers e o publisher são Lambdas criadas pelo Terraform em `infra/`.
 
@@ -54,6 +54,7 @@ Os workers rodam em Lambda com PHP 8.4 via Bref (`bref/laravel-bridge`), reaprov
 1. A aplicação grava o status e um `ServiceOrderStatusChanged` na outbox, na mesma transação. O campo `sequence` é o id da linha na outbox da aplicação. Esse id cresce a cada evento da O.S.
 2. O MS aplica o evento somente se `sequence` for maior que o `status_sequence` salvo. Eventos repetidos ou antigos são ignorados.
 3. Um serviço só pode ser iniciado com a O.S. em `em_execucao`. O primeiro início gera `ServiceOrderExecutionStarted`. A conclusão do último serviço gera `ServiceOrderExecutionFinished`. Os dois eventos carregam o `status_sequence` do momento.
+   Além deles, **todo** início e fim de serviço gera `ServiceOrderServiceStarted` / `ServiceOrderServiceFinished` com `service_order_service_id`, `user_id` e `started_at`/`finished_at`. A aplicação grava esses campos em `service_order_services` (sem mudar o status). Todos usam o id da O.S. como grupo FIFO, então chegam na ordem em que aconteceram.
 4. A aplicação ignora `ServiceOrderExecutionStarted`, pois a aprovação já leva a O.S. para `em_execucao`. Ela aplica `ServiceOrderExecutionFinished` e muda para `finalizada` somente se a O.S. ainda estiver em `em_execucao` e se `status_sequence` for o último evento de status dela. Se a aplicação mudou o status depois disso, o evento é descartado. A mudança para `finalizada` volta ao MS como um novo `ServiceOrderStatusChanged`.
 
 O.S. sem `status_sequence` (importadas antes desta mudança) recusam início/fim com 422 até receberem um evento de status. Para isso, rode `services-ms:sync-service-order-status` na aplicação (ver "Corte" abaixo). Os eventos legados `ServiceOrderApprovalChanged` ainda são aceitos na fila de criação, mas só alteram O.S. que ainda não têm `status_sequence`.
@@ -262,6 +263,10 @@ A fila `service-order-status-changed` inverteu de sentido: antes ia do MS para a
 4. Implante a aplicação pelo repositório Kubernetes. O workflow remove `postech-status-consumer` e os workers antigos da aplicação antes de aplicar a nova imagem. No mesmo workflow, depois das migrations, o job `lambdas` cria as Lambdas `postech-outbox-publisher` e `postech-execution-consumer` (`tech-challenge-kubernetes/app-lambda`). Confirme que `SERVICES_MS_ENABLED=true`, senão a aplicação não publica eventos.
 5. Na aplicação, rode `php artisan services-ms:backfill-service-orders` para O.S. ainda não importadas e depois `php artisan services-ms:sync-service-order-status`.
 6. Verifique as DLQs. Mensagens antigas no formato anterior, sem `sequence`, que chegarem ao novo consumidor do MS vão para a DLQ após 3 tentativas e podem ser descartadas.
+
+### Eventos por serviço (`ServiceOrderServiceStarted` / `ServiceOrderServiceFinished`)
+
+Aqui a ordem é a **inversa** do corte acima: implante a **aplicação primeiro** (a migration `2026_11_16_000000` recria as colunas `started_at`/`finished_at` em `service_order_services`, e o consumer passa a aceitar os novos tipos) e só depois o MS. Se o MS for primeiro, o consumer antigo da aplicação rejeita os eventos novos, e eles vão para a DLQ `service-order-execution-dlq.fifo` após 3 tentativas. Nesse caso, faça o redrive da DLQ depois do deploy da aplicação. Fila, Lambdas e IAM não mudam.
 
 ---
 

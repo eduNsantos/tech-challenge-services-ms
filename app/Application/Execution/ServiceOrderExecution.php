@@ -33,10 +33,18 @@ class ServiceOrderExecution
             }
 
             $firstStart = ! $order->services()->whereNotNull('started_at')->exists();
-            $service->update(['started_at' => now(), 'started_user_id' => $userId]);
+            $startedAt = now();
+            $service->update(['started_at' => $startedAt, 'started_user_id' => $userId]);
+
+            // Todo início vai para a fila; a aplicação atualiza o serviço do lado dela.
+            $this->recordEvent($order, 'ServiceOrderServiceStarted', [
+                'service_order_service_id' => $service->id,
+                'started_at' => $startedAt->toIso8601String(),
+                'user_id' => $userId,
+            ]);
 
             if ($firstStart) {
-                $this->recordExecutionEvent($order, 'ServiceOrderExecutionStarted');
+                $this->recordEvent($order, 'ServiceOrderExecutionStarted');
             }
 
             return $order->fresh('services');
@@ -69,8 +77,14 @@ class ServiceOrderExecution
             $service->update(['finished_at' => $finishedAt, 'finished_user_id' => $userId]);
             $serviceSeconds = (float) $service->started_at->diffInSeconds($finishedAt);
 
+            $this->recordEvent($order, 'ServiceOrderServiceFinished', [
+                'service_order_service_id' => $service->id,
+                'finished_at' => $finishedAt->toIso8601String(),
+                'user_id' => $userId,
+            ]);
+
             if (! $order->services()->whereNull('finished_at')->exists()) {
-                $this->recordExecutionEvent($order, 'ServiceOrderExecutionFinished');
+                $this->recordEvent($order, 'ServiceOrderExecutionFinished');
 
                 $firstStartedAt = $order->services()->min('started_at');
                 $executionSeconds = (float) Carbon::parse($firstStartedAt)->diffInSeconds($finishedAt);
@@ -104,7 +118,11 @@ class ServiceOrderExecution
         return $service;
     }
 
-    private function recordExecutionEvent(ServiceOrder $order, string $type): void
+    /**
+     * Grava o evento no outbox na mesma transação da mudança. Todos usam o id da O.S. como grupo FIFO,
+     * então a aplicação recebe início/fim de serviço e de execução na ordem em que aconteceram.
+     */
+    private function recordEvent(ServiceOrder $order, string $type, array $data = []): void
     {
         if ($order->status_sequence === null) {
             throw new DomainException('Service order status has not been synchronized from the application.');
@@ -123,7 +141,7 @@ class ServiceOrderExecution
                 'occurred_at' => now()->toIso8601String(),
                 'service_order_id' => $order->id,
                 'status_sequence' => (int) $order->status_sequence,
-            ], JSON_THROW_ON_ERROR),
+            ] + $data, JSON_THROW_ON_ERROR),
             'created_at' => now(),
             'updated_at' => now(),
         ]);

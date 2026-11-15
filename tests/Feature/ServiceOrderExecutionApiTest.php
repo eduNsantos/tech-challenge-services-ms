@@ -83,9 +83,36 @@ class ServiceOrderExecutionApiTest extends TestCase
 
         $this->assertDatabaseHas('service_order_services', ['id' => self::SVC_1, 'started_user_id' => '42']);
 
-        $event = json_decode(DB::table('outbox')->first()->payload, true);
-        $this->assertSame('ServiceOrderExecutionStarted', $event['type']);
-        $this->assertSame(1, $event['status_sequence']);
+        $events = DB::table('outbox')->orderBy('id')->pluck('payload')->map(fn ($p) => json_decode($p, true));
+        $this->assertSame(['ServiceOrderServiceStarted', 'ServiceOrderExecutionStarted'], $events->pluck('type')->all());
+        $this->assertSame(self::SVC_1, $events[0]['service_order_service_id']);
+        $this->assertSame('42', $events[0]['user_id']);
+        $this->assertNotEmpty($events[0]['started_at']);
+        $this->assertSame(1, $events[1]['status_sequence']);
+    }
+
+    public function test_every_service_start_and_finish_is_sent_to_the_execution_queue(): void
+    {
+        $this->seedOrder();
+        $order = '/service-orders/'.self::ORDER.'/services/';
+
+        $this->postJson($order.self::SVC_1.'/start', [], $this->auth())->assertOk();
+        $this->postJson($order.self::SVC_2.'/start', [], $this->auth())->assertOk();
+        $this->postJson($order.self::SVC_1.'/finish', [], $this->auth())->assertOk();
+
+        $events = DB::table('outbox')->orderBy('id')->get(['type', 'group_id', 'payload']);
+        $this->assertSame([
+            'ServiceOrderServiceStarted',
+            'ServiceOrderExecutionStarted',
+            'ServiceOrderServiceStarted',
+            'ServiceOrderServiceFinished',
+        ], $events->pluck('type')->all());
+        $this->assertSame([self::ORDER], $events->pluck('group_id')->unique()->values()->all());
+
+        $finished = json_decode($events[3]->payload, true);
+        $this->assertSame(self::SVC_1, $finished['service_order_service_id']);
+        $this->assertSame('42', $finished['user_id']);
+        $this->assertNotEmpty($finished['finished_at']);
     }
 
     public function test_cannot_start_service_before_approval(): void
@@ -125,7 +152,8 @@ class ServiceOrderExecutionApiTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.status', 'em_execucao');
 
-        $this->assertSame(2, DB::table('outbox')->count());
+        $this->assertSame(1, DB::table('outbox')->where('type', 'ServiceOrderExecutionStarted')->count());
+        $this->assertSame(2, DB::table('outbox')->where('type', 'ServiceOrderServiceFinished')->count());
         $this->assertSame('ServiceOrderExecutionFinished', DB::table('outbox')->orderByDesc('id')->value('type'));
     }
 

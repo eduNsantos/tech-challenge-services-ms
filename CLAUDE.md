@@ -2,7 +2,7 @@
 
 ## O que é este projeto
 
-Microsserviço de **execução dos serviços da O.S.** (Tech Challenge FIAP POS): início/fim de cada serviço e aviso de fim de execução para a aplicação.
+Microsserviço de **execução dos serviços da O.S.** (Tech Challenge FIAP POS): início/fim de cada serviço (cada um vira evento para a aplicação) e aviso de fim de execução.
 Laravel 12 / PHP 8.4. A **O.S. e o status pertencem ao `tech-challenge-application`**; o MS guarda uma cópia somente leitura do status.
 Diagrama: `docs/architecture.png`. Detalhes de operação, métricas e corte no `README.md`.
 
@@ -18,6 +18,7 @@ EventBridge rate(1 min) ─> λ services-ms-outbox-publisher ─ lê outbox ─�
 
 - Filas FIFO com `MessageGroupId` = id da O.S. e `MessageDeduplicationId` = `event_id`; DLQ `*-dlq.fifo` com `maxReceiveCount = 3`.
 - `service-order-status-changed` **inverteu de sentido** (antes MS → app; agora app → MS). Ver "Corte" no README.
+- Eventos de saída (mesma fila, grupo = id da O.S.): `ServiceOrderServiceStarted`/`ServiceOrderServiceFinished` em todo start/finish (com `service_order_service_id`, `user_id`, `started_at`/`finished_at`) e `ServiceOrderExecutionStarted`/`ServiceOrderExecutionFinished` no 1º início e no último fim. Tipo novo precisa entrar em `OutboxPublisher::SUPPORTED_TYPES` e ser aceito pelo consumer da aplicação **antes** do deploy do MS.
 - Status aplicado só se `sequence > status_sequence`. Início de serviço só com O.S. em `em_execucao` e `status_sequence` preenchido.
 
 ### Status (`App\Domain\ServiceOrder\ServiceOrderStatus`)
