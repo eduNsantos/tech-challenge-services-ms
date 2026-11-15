@@ -6,7 +6,8 @@ meta {
 
 post {
   url: {{baseUrl}}/service-orders/{{serviceOrderId}}/services/{{serviceId}}/start
-  auth: bearer {{jwtToken}}
+  body: none
+  auth: inherit
 }
 
 settings {
@@ -15,28 +16,23 @@ settings {
 }
 
 docs {
-  # Start Service Execution
+  # Iniciar serviço
   
-  Marks a service as started within a service order. This records the start time and technician ID.
+  Grava `started_at` e `started_user_id` (claim `sub` do JWT) no serviço. Não muda o status da O.S.
   
-  ## Prerequisites
-  - Valid JWT token in `jwtToken` variable
-  - Service Order ID in `serviceOrderId` variable
-  - Service ID in `serviceId` variable
-  - User must be authenticated and have permission to execute services
+  ## Pré-requisitos
+  - JWT emitido pela aplicação na variável `jwtToken`
+  - `serviceOrderId`: ID da O.S.
+  - `serviceId`: ID do item de serviço da O.S. (`services[].id` da consulta, não o `service_id` do catálogo)
+  - O.S. em `em_execucao` (orçamento aprovado na aplicação)
   
-  ## Path Parameters
-  - `serviceOrderId` - UUID of the service order
-  - `serviceId` - UUID of the service within the order
+  ## Eventos publicados
+  - `ServiceOrderServiceStarted` em todo início
+  - `ServiceOrderExecutionStarted` também no 1º início da O.S.
   
-  ## Response
-  Returns the updated service order with the service status changed to "STARTED".
-  
-  ## Notes
-  - The JWT token's `user_id` is extracted and recorded as the technician
-  - A service can only be started once
-  - Starting a service begins time tracking
-  
-  ## Error Handling
-  - 422: Service already started or business rule violation
+  ## Respostas
+  - 200: O.S. atualizada
+  - 404: O.S. ou serviço não encontrado
+  - 422: `The service was already started.` / `Cannot start a service while the order is <status>.` /
+    `Service order status has not been synchronized from the application.`
 }

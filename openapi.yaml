@@ -1,0 +1,406 @@
+openapi: 3.0.3
+
+info:
+  title: Services MS API
+  description: |-
+    API de **execução dos serviços da Ordem de Serviço** (tech-challenge-services-ms).
+
+    O mecânico registra o início e o fim de cada serviço da O.S. Cada início/fim é gravado na tabela
+    `outbox` na mesma transação e publicado na fila `service-order-execution.fifo`, consumida pelo
+    `tech-challenge-application`.
+
+    ## Quem é dono do quê
+
+    - A **O.S. e o status pertencem à aplicação**. O MS guarda uma cópia somente leitura, recebida pelas
+      filas `service-orders-created.fifo` e `service-order-status-changed.fifo`.
+    - Não existe rota para mudar o status aqui. Para liberar a execução, aprove o orçamento na aplicação.
+      A O.S. chega ao MS em `em_execucao`.
+
+    ## Autenticação
+
+    Todas as rotas de `/service-orders` exigem um **JWT HS256 emitido pela aplicação** (`POST /auth/login`
+    da application; os dois serviços usam o mesmo `JWT_SECRET`). O claim `sub` é gravado como o usuário
+    que iniciou/finalizou o serviço.
+
+    ```
+    Authorization: Bearer {access_token}
+    ```
+
+    Envie também `Accept: application/json`. Sem esse header, os erros 404 voltam em HTML.
+
+    ## Eventos publicados
+
+    | Ação | Eventos (grupo FIFO = id da O.S.) |
+    |---|---|
+    | `start` | `ServiceOrderServiceStarted` em todo início; `ServiceOrderExecutionStarted` também no 1º início da O.S. |
+    | `finish` | `ServiceOrderServiceFinished` em todo fim; `ServiceOrderExecutionFinished` também no fim do último serviço (a aplicação muda a O.S. para `finalizada`) |
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000
+    description: Desenvolvimento local (docker compose)
+  - url: http://{host}:8081
+    description: LoadBalancer do EKS (`kubectl get svc services-ms-web -n services-ms`)
+    variables:
+      host:
+        default: localhost
+        description: Hostname do LoadBalancer
+
+tags:
+  - name: Ordens de Serviço
+    description: Consulta da O.S. e dos serviços (cópia somente leitura da aplicação)
+  - name: Execução
+    description: Início e fim de cada serviço da O.S.
+  - name: Health
+    description: Health check usado pelas probes do Kubernetes
+
+security:
+  - bearerAuth: []
+
+paths:
+
+  /service-orders/{id}:
+    get:
+      tags:
+        - Ordens de Serviço
+      summary: Consultar O.S. com os serviços
+      description: Retorna a O.S. e os serviços dela, com os horários e os usuários de início e fim.
+      operationId: service-orders-show
+      parameters:
+        - $ref: '#/components/parameters/ServiceOrderId'
+      responses:
+        '200':
+          $ref: '#/components/responses/ServiceOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /service-orders/{id}/services/{serviceId}/start:
+    post:
+      tags:
+        - Execução
+      summary: Iniciar um serviço da O.S.
+      description: |-
+        Grava `started_at` e `started_user_id` (claim `sub` do JWT) no serviço e coloca os eventos na outbox.
+        Não muda o status da O.S. A requisição não tem corpo.
+
+        Regras (violação → `422`):
+        - a O.S. precisa estar em `em_execucao`;
+        - o status precisa ter sido sincronizado pela aplicação (`status_sequence` preenchido);
+        - o serviço não pode ter sido iniciado antes.
+      operationId: service-orders-services-start
+      parameters:
+        - $ref: '#/components/parameters/ServiceOrderId'
+        - $ref: '#/components/parameters/ServiceId'
+      responses:
+        '200':
+          $ref: '#/components/responses/ServiceOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Regra de negócio violada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                already_started:
+                  summary: Serviço já iniciado
+                  value:
+                    message: The service was already started.
+                wrong_status:
+                  summary: O.S. fora de em_execucao
+                  value:
+                    message: Cannot start a service while the order is em_diagnostico.
+                not_synchronized:
+                  summary: Status ainda não sincronizado pela aplicação
+                  value:
+                    message: Service order status has not been synchronized from the application.
+
+  /service-orders/{id}/services/{serviceId}/finish:
+    post:
+      tags:
+        - Execução
+      summary: Finalizar um serviço da O.S.
+      description: |-
+        Grava `finished_at` e `finished_user_id` (claim `sub` do JWT) no serviço e coloca os eventos na outbox.
+        Ao finalizar o último serviço, publica também `ServiceOrderExecutionFinished`. A aplicação então
+        muda a O.S. para `finalizada`, e a mudança volta ao MS pela fila de status. Por isso a resposta
+        imediata ainda mostra `em_execucao`. A requisição não tem corpo.
+
+        Regras (violação → `422`):
+        - o serviço precisa ter sido iniciado;
+        - o serviço não pode ter sido finalizado antes.
+      operationId: service-orders-services-finish
+      parameters:
+        - $ref: '#/components/parameters/ServiceOrderId'
+        - $ref: '#/components/parameters/ServiceId'
+      responses:
+        '200':
+          $ref: '#/components/responses/ServiceOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Regra de negócio violada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_started:
+                  summary: Serviço não iniciado
+                  value:
+                    message: The service was not started.
+                already_finished:
+                  summary: Serviço já finalizado
+                  value:
+                    message: The service was already finished.
+                not_synchronized:
+                  summary: Status ainda não sincronizado pela aplicação
+                  value:
+                    message: Service order status has not been synchronized from the application.
+
+  /up:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Rota padrão do Laravel usada pelas probes de liveness/readiness. Não exige autenticação.
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Aplicação no ar (página HTML do Laravel)
+          content:
+            text/html:
+              schema:
+                type: string
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token HS256 emitido pela aplicação (mesmo `JWT_SECRET`). O claim `sub` é obrigatório.
+
+  parameters:
+    ServiceOrderId:
+      name: id
+      in: path
+      required: true
+      description: ID (UUID) da O.S., o mesmo da aplicação
+      schema:
+        type: string
+        format: uuid
+      example: a1f1b1c0-0000-4000-8000-000000000010
+    ServiceId:
+      name: serviceId
+      in: path
+      required: true
+      description: ID (UUID) do item de serviço da O.S. (`services[].id`, não o `service_id` do catálogo)
+      schema:
+        type: string
+        format: uuid
+      example: e1f1b1c0-0000-4000-8000-000000000041
+
+  responses:
+    ServiceOrder:
+      description: O.S. com os serviços
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - data
+            properties:
+              data:
+                $ref: '#/components/schemas/ServiceOrder'
+          example:
+            data:
+              id: a1f1b1c0-0000-4000-8000-000000000010
+              customer_id: c1f1b1c0-0000-4000-8000-000000000001
+              vehicle_id: v1f1b1c0-0000-4000-8000-000000000002
+              status: em_execucao
+              status_sequence: 3
+              services_total: 200
+              creation_date: '2026-11-15T13:00:00.000000Z'
+              created_at: '2026-11-15T13:00:05.000000Z'
+              updated_at: '2026-11-15T14:10:00.000000Z'
+              services:
+                - id: e1f1b1c0-0000-4000-8000-000000000041
+                  service_order_id: a1f1b1c0-0000-4000-8000-000000000010
+                  service_id: 51f1b1c0-0000-4000-8000-000000000031
+                  name: Troca de óleo
+                  quantity: 1
+                  price: 100
+                  started_at: '2026-11-15T14:00:00.000000Z'
+                  finished_at: null
+                  started_user_id: '42'
+                  finished_user_id: null
+                  created_at: '2026-11-15T13:00:05.000000Z'
+                  updated_at: '2026-11-15T14:00:00.000000Z'
+                - id: e1f1b1c0-0000-4000-8000-000000000042
+                  service_order_id: a1f1b1c0-0000-4000-8000-000000000010
+                  service_id: 51f1b1c0-0000-4000-8000-000000000032
+                  name: Alinhamento
+                  quantity: 1
+                  price: 100
+                  started_at: null
+                  finished_at: null
+                  started_user_id: null
+                  finished_user_id: null
+                  created_at: '2026-11-15T13:00:05.000000Z'
+                  updated_at: '2026-11-15T13:00:05.000000Z'
+    Unauthorized:
+      description: Token ausente, expirado, com assinatura inválida ou sem claim `sub`
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: Unauthenticated.
+    NotFound:
+      description: |-
+        O.S. ou serviço não encontrado. Pode ser uma O.S. que ainda não chegou ao MS pela fila
+        `service-orders-created.fifo`. Só volta em JSON com `Accept: application/json`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            order:
+              summary: O.S. não encontrada
+              value:
+                message: No query results for model [App\Models\ServiceOrder] a1f1b1c0-0000-4000-8000-000000000099
+            service:
+              summary: Serviço não pertence à O.S.
+              value:
+                message: No query results for model [App\Models\ServiceOrderService] e1f1b1c0-0000-4000-8000-000000000099
+
+  schemas:
+    ServiceOrderStatus:
+      type: string
+      description: |-
+        Status da O.S. (somente leitura no MS; quem muda é a aplicação).
+        Fluxo: recebida → em_diagnostico ⇄ aguardando_aprovacao → em_execucao → finalizada → entregue
+        (também recebida → aguardando_aprovacao).
+      enum:
+        - recebida
+        - em_diagnostico
+        - aguardando_aprovacao
+        - em_execucao
+        - finalizada
+        - entregue
+
+    ServiceOrder:
+      type: object
+      required:
+        - id
+        - customer_id
+        - vehicle_id
+        - status
+        - services_total
+        - creation_date
+        - services
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        vehicle_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ServiceOrderStatus'
+        status_sequence:
+          type: integer
+          nullable: true
+          description: Sequência do último status recebido da aplicação. `null` = ainda não sincronizado (não dá para iniciar serviços).
+        services_total:
+          type: number
+          format: float
+          description: Valor total dos serviços
+        creation_date:
+          type: string
+          format: date-time
+          description: Data de abertura da O.S. na aplicação
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceOrderService'
+
+    ServiceOrderService:
+      type: object
+      required:
+        - id
+        - service_order_id
+        - service_id
+        - name
+        - quantity
+        - price
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: ID do item na O.S. (use em `{serviceId}` nas rotas de start/finish)
+        service_order_id:
+          type: string
+          format: uuid
+        service_id:
+          type: string
+          format: uuid
+          description: ID do serviço no catálogo da aplicação
+        name:
+          type: string
+          description: Nome do serviço copiado do catálogo da aplicação quando a O.S. foi importada
+        quantity:
+          type: integer
+          minimum: 1
+        price:
+          type: number
+          format: float
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        started_user_id:
+          type: string
+          nullable: true
+          description: Claim `sub` do JWT de quem iniciou
+        finished_user_id:
+          type: string
+          nullable: true
+          description: Claim `sub` do JWT de quem finalizou
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string

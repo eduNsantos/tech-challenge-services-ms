@@ -345,3 +345,18 @@ jobs:
           done
 
           kubectl rollout status deployment/services-ms-web -n "$NAMESPACE" --timeout=300s
+
+      # O contrato vem do openapi.yaml do repo; o checksum reinicia o pod quando ele muda.
+      - name: Deploy Swagger UI
+        run: |
+          set -euo pipefail
+
+          kubectl create configmap services-ms-openapi \
+            --namespace "$NAMESPACE" \
+            --from-file=openapi.yaml \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          checksum=$(sha256sum openapi.yaml | cut -c1-16)
+          sed "s|<OPENAPI_CHECKSUM>|${checksum}|" k8s/02-app/swagger-ui.yaml | kubectl apply -f -
+
+          kubectl rollout status deployment/services-ms-swagger -n "$NAMESPACE" --timeout=180s

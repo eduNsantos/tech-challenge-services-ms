@@ -136,7 +136,16 @@ HOST=$(kubectl get svc services-ms-web -n services-ms -o jsonpath='{.status.load
 curl -s "http://$HOST:8081/service-orders/<id>" -H "Authorization: Bearer $TOKEN"
 ```
 
-O token é emitido pela aplicação (mesmo `JWT_SECRET`). A collection Bruno está em [`bruno/`](bruno/README.md).
+O token é emitido pela aplicação (mesmo `JWT_SECRET`). Envie `Accept: application/json` para receber os erros 404 em JSON.
+
+Documentação da API:
+- **OpenAPI/Swagger:** [`openapi.yaml`](openapi.yaml). Com `docker compose up -d`, o Swagger UI fica em `http://localhost:8083`.
+  No EKS, o CI publica o Deployment `services-ms-swagger` (ConfigMap `services-ms-openapi` gerado do `openapi.yaml`)
+  atrás de um LoadBalancer próprio na porta **8082**:
+  `kubectl get svc services-ms-swagger -n services-ms -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'`.
+  Para usar o "Try it out", escolha o servidor do EKS e informe o hostname do `services-ms-web`. O CORS está liberado
+  para `service-orders/*` em [`config/cors.php`](config/cors.php).
+- **Bruno:** collection em [`bruno/`](bruno/README.md).
 
 ---
 
@@ -386,10 +395,11 @@ tech-challenge-services-ms/
 │   └── tests/pod_identity.tftest.hcl
 ├── k8s/
 │   ├── 00-namespace/  01-config/                    # namespace, ConfigMap (placeholders preenchidos pelo CI)
-│   ├── 02-app/                                      # web, HPA + LB :8081, Job de migrations
+│   ├── 02-app/                                      # web, HPA + LB :8081, Job de migrations, Swagger UI (LB :8082)
 │   └── 03-observability/otel-collector.yaml
 ├── otel/lambda-collector.yaml                       # config do collector das Lambdas
 ├── scripts/build-lambda.sh                          # monta build/lambda
+├── openapi.yaml                                     # contrato OpenAPI 3 (Swagger UI em :8083 no compose)
 ├── bruno/                                           # collection da API
 ├── docs/architecture.png                         # diagrama da arquitetura
 ├── tests/                                           # PHPUnit (Feature + Unit)

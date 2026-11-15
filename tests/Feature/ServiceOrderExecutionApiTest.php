@@ -157,6 +157,21 @@ class ServiceOrderExecutionApiTest extends TestCase
         $this->assertSame('ServiceOrderExecutionFinished', DB::table('outbox')->orderByDesc('id')->value('type'));
     }
 
+    public function test_allows_cross_origin_requests_from_swagger_ui(): void
+    {
+        $this->call('OPTIONS', '/service-orders/'.self::ORDER, [], [], [], [
+            'HTTP_ORIGIN' => 'http://swagger.example',
+            'HTTP_ACCESS_CONTROL_REQUEST_METHOD' => 'POST',
+            'HTTP_ACCESS_CONTROL_REQUEST_HEADERS' => 'authorization',
+        ])
+            ->assertNoContent()
+            ->assertHeader('Access-Control-Allow-Origin', '*');
+
+        $this->getJson('/service-orders/'.self::ORDER, ['Origin' => 'http://swagger.example'])
+            ->assertUnauthorized()
+            ->assertHeader('Access-Control-Allow-Origin', '*');
+    }
+
     public function test_status_cannot_be_changed_directly(): void
     {
         $this->seedOrder('finalizada');
