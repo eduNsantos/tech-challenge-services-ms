@@ -2,6 +2,7 @@
 
 namespace App\Application\ServiceOrder;
 
+use App\Application\Telemetry\Metrics;
 use App\Domain\ServiceOrder\ServiceOrderStatus;
 use App\Models\ServiceOrder;
 use DateTimeImmutable;
@@ -14,6 +15,8 @@ use InvalidArgumentException;
 class ProcessServiceOrderApprovalChanged
 {
     public const TYPE = 'ServiceOrderApprovalChanged';
+
+    public function __construct(private readonly Metrics $metrics) {}
 
     /**
      * @return bool true when the MS status was changed
@@ -43,7 +46,7 @@ class ProcessServiceOrderApprovalChanged
         }
 
         try {
-            return DB::transaction(function () use ($eventId, $orderId, $previousStatus, $status): bool {
+            $changed = DB::transaction(function () use ($eventId, $orderId, $previousStatus, $status): bool {
                 DB::table('processed_messages')->insert([
                     'event_id' => $eventId,
                     'type' => self::TYPE,
@@ -67,6 +70,12 @@ class ProcessServiceOrderApprovalChanged
         } catch (UniqueConstraintViolationException) {
             return false;
         }
+
+        if ($changed) {
+            $this->metrics->statusChanged($previousStatus, $status->value, self::TYPE);
+        }
+
+        return $changed;
     }
 
     private function requireString(array $payload, string $key): string

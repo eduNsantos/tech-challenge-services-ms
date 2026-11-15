@@ -129,3 +129,35 @@ run "lambda_workers_scoped_to_their_queues" {
     error_message = "O publisher da outbox deve ser agendado a cada minuto."
   }
 }
+
+run "lambda_metrics_disabled_without_license_key" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for fn in aws_lambda_function.worker :
+      length(fn.layers) == 1 && fn.environment[0].variables["OTEL_METRICS_EXPORTER"] == "none"
+    ])
+    error_message = "Sem license key do New Relic, as Lambdas não devem carregar a layer do collector."
+  }
+}
+
+run "lambda_metrics_use_collector_layer" {
+  command = plan
+
+  variables {
+    new_relic_license_key = "test-only-license"
+  }
+
+  assert {
+    condition = alltrue([
+      for fn in aws_lambda_function.worker :
+      length(fn.layers) == 2 &&
+      endswith(fn.layers[1], ":layer:opentelemetry-collector-amd64-${var.otel_collector_layer_version}:1") &&
+      fn.environment[0].variables["OTEL_METRICS_EXPORTER"] == "otlp" &&
+      fn.environment[0].variables["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4318" &&
+      fn.environment[0].variables["OPENTELEMETRY_COLLECTOR_CONFIG_URI"] == "/var/task/collector.yaml"
+    ])
+    error_message = "Com license key, cada Lambda deve exportar OTLP para a extension do collector."
+  }
+}

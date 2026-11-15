@@ -2,7 +2,9 @@
 
 namespace App\Application\Outbox;
 
+use App\Application\Telemetry\Metrics;
 use Aws\Sqs\SqsClient;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
@@ -16,7 +18,10 @@ class OutboxPublisher
 
     private const LOCK_NAME = 'services-ms-outbox-publisher';
 
-    public function __construct(private readonly SqsClient $client) {}
+    public function __construct(
+        private readonly SqsClient $client,
+        private readonly Metrics $metrics,
+    ) {}
 
     /**
      * @return int|null eventos publicados, ou null se outro publisher já estiver rodando.
@@ -47,6 +52,7 @@ class OutboxPublisher
         $events = DB::table('outbox')->whereNull('published_at')->orderBy('id')->limit($limit)->get();
         $published = 0;
         $blockedGroups = [];
+        $queue = basename(parse_url($url, PHP_URL_PATH) ?: $url);
 
         foreach ($events as $event) {
             // Preserva a ordem por O.S.: se um evento falhar, os seguintes do mesmo grupo esperam.
@@ -56,6 +62,7 @@ class OutboxPublisher
 
             if (! in_array($event->type, self::SUPPORTED_TYPES, true)) {
                 report(new RuntimeException("Unsupported outbox event type {$event->type}."));
+                $this->metrics->messageSent($queue, 'unknown', 'unsupported_event_type');
                 $blockedGroups[$event->group_id] = true;
 
                 continue;
@@ -70,12 +77,19 @@ class OutboxPublisher
                 ]);
             } catch (Throwable $e) {
                 report($e);
+                $this->metrics->messageSent($queue, $event->type, $e::class);
                 $blockedGroups[$event->group_id] = true;
 
                 continue;
             }
 
-            DB::table('outbox')->where('id', $event->id)->update(['published_at' => now()]);
+            $publishedAt = now();
+            DB::table('outbox')->where('id', $event->id)->update(['published_at' => $publishedAt]);
+            $this->metrics->messageSent(
+                $queue,
+                $event->type,
+                lagSeconds: (float) Carbon::parse($event->created_at)->diffInSeconds($publishedAt),
+            );
             $published++;
         }
 

@@ -8,6 +8,22 @@ locals {
   # Versão da layer php-84 do Bref (vendor/bref/bref/layers.json, bref/bref 2.4.x).
   bref_php_layer_arn = "arn:aws:lambda:${var.aws_region}:534081306603:layer:php-84:${var.bref_php_layer_version}"
 
+  # OTel Collector como Lambda extension: o PHP exporta para localhost:4318 e o
+  # collector repassa ao New Relic. As funções usam x86_64 (padrão), daí o amd64.
+  otel_enabled             = var.new_relic_license_key != ""
+  otel_collector_layer_arn = "arn:aws:lambda:${var.aws_region}:184161586896:layer:opentelemetry-collector-amd64-${var.otel_collector_layer_version}:1"
+
+  otel_environment = local.otel_enabled ? {
+    OTEL_METRICS_EXPORTER              = "otlp"
+    OTEL_EXPORTER_OTLP_ENDPOINT        = "http://localhost:4318"
+    OTEL_SERVICE_NAME                  = "services-ms"
+    OPENTELEMETRY_COLLECTOR_CONFIG_URI = "/var/task/collector.yaml"
+    NEW_RELIC_OTLP_ENDPOINT            = var.new_relic_otlp_endpoint
+    NEW_RELIC_LICENSE_KEY              = var.new_relic_license_key
+    } : {
+    OTEL_METRICS_EXPORTER = "none"
+  }
+
   lambda_base_environment = {
     APP_NAME                  = "Services MS"
     APP_ENV                   = "production"
@@ -121,7 +137,7 @@ resource "aws_lambda_function" "worker" {
   function_name    = "${var.project_name}-${each.key}"
   role             = aws_iam_role.lambda[each.key].arn
   runtime          = "provided.al2"
-  layers           = [local.bref_php_layer_arn]
+  layers           = local.otel_enabled ? [local.bref_php_layer_arn, local.otel_collector_layer_arn] : [local.bref_php_layer_arn]
   handler          = each.value.handler
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
@@ -129,7 +145,7 @@ resource "aws_lambda_function" "worker" {
   memory_size      = 512
 
   environment {
-    variables = merge(local.lambda_base_environment, each.value.env)
+    variables = merge(local.lambda_base_environment, local.otel_environment, each.value.env)
   }
 
   depends_on = [

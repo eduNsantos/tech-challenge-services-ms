@@ -13,6 +13,9 @@ for path in app bootstrap config database routes resources artisan composer.json
   cp -R "$ROOT/$path" "$OUT/"
 done
 
+# Config do OTel Collector da layer (OPENTELEMETRY_COLLECTOR_CONFIG_URI=/var/task/collector.yaml).
+cp "$ROOT/otel/lambda-collector.yaml" "$OUT/collector.yaml"
+
 # Caches locais (config, rotas, pacotes de dev) não podem ir no pacote.
 find "$OUT/bootstrap/cache" -type f -name '*.php' -delete
 

@@ -12,7 +12,9 @@
         "bref/laravel-bridge": "^2",
         "firebase/php-jwt": "^7.2",
         "laravel/framework": "^12.0",
-        "laravel/tinker": "^2.10.1"
+        "laravel/tinker": "^2.10.1",
+        "open-telemetry/exporter-otlp": "^1.5",
+        "open-telemetry/sdk": "^1.16"
     },
     "require-dev": {
         "fakerphp/faker": "^1.23",

@@ -2,6 +2,7 @@
 
 namespace App\Application\ServiceOrder;
 
+use App\Application\Telemetry\Metrics;
 use App\Domain\ServiceOrder\ServiceOrderStatus;
 use App\Models\ServiceOrder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -11,9 +12,13 @@ use InvalidArgumentException;
 
 class ProcessServiceOrderStatusChanged
 {
+    public const TYPE = 'ServiceOrderStatusChanged';
+
+    public function __construct(private readonly Metrics $metrics) {}
+
     public function handle(array $payload): bool
     {
-        if (($payload['type'] ?? null) !== 'ServiceOrderStatusChanged'
+        if (($payload['type'] ?? null) !== self::TYPE
             || ($payload['version'] ?? null) !== 1
             || ! is_string($payload['event_id'] ?? null)
             || trim($payload['event_id']) === ''
@@ -26,8 +31,10 @@ class ProcessServiceOrderStatusChanged
             throw new InvalidArgumentException('Invalid service order status event.');
         }
 
+        $previousStatus = null;
+
         try {
-            return DB::transaction(function () use ($payload): bool {
+            $changed = DB::transaction(function () use ($payload, &$previousStatus): bool {
                 DB::table('processed_messages')->insert([
                     'event_id' => $payload['event_id'],
                     'type' => $payload['type'],
@@ -42,6 +49,7 @@ class ProcessServiceOrderStatusChanged
                     return false;
                 }
 
+                $previousStatus = $order->status;
                 $order->forceFill([
                     'status' => $payload['status'],
                     'status_sequence' => $payload['sequence'],
@@ -52,5 +60,11 @@ class ProcessServiceOrderStatusChanged
         } catch (UniqueConstraintViolationException) {
             return false;
         }
+
+        if ($changed && $previousStatus !== $payload['status']) {
+            $this->metrics->statusChanged($previousStatus, $payload['status'], self::TYPE);
+        }
+
+        return $changed;
     }
 }

@@ -11,6 +11,11 @@ class ServiceOrderStatusChangedHandler extends FifoSqsHandler
 {
     public function __construct(private readonly ProcessServiceOrderStatusChanged $processor) {}
 
+    protected function eventTypes(): array
+    {
+        return [ProcessServiceOrderStatusChanged::TYPE];
+    }
+
     protected function process(array $payload): bool
     {
         return $this->processor->handle($payload);

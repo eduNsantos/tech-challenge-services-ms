@@ -146,6 +146,54 @@ na branch selecionada:
 Os deploys manuais do Services MS e Kubernetes alteram o cluster EKS
 compartilhado; revise a branch e a tag antes de iniciá-los.
 
+## Observabilidade (OpenTelemetry → New Relic)
+
+O MS não usa o agente PHP do New Relic. Ele exporta métricas OTLP/HTTP
+(temporalidade delta) para um OpenTelemetry Collector, que repassa ao New Relic:
+
+```
+API web (EKS) ──OTLP──> otel-collector (Deployment, k8s/03-observability) ──┐
+Lambdas ──OTLP localhost──> layer opentelemetry-collector (extension) ──────┴──> otlp.nr-data.net
+```
+
+- **EKS**: `k8s/03-observability/otel-collector.yaml` (ConfigMap, Deployment e
+  Service `otel-collector:4318`). O workflow cria o Secret `otel-collector-secret`
+  e aplica o collector antes do rollout da API.
+- **Lambdas**: as funções rodam fora da VPC e não alcançam o cluster, então cada
+  uma carrega a layer `opentelemetry-collector-amd64-<versão>` (variável
+  `otel_collector_layer_version`) com a config `otel/lambda-collector.yaml`
+  (copiada para `/var/task/collector.yaml` pelo `scripts/build-lambda.sh`). Sem
+  `new_relic_license_key`, o Terraform não adiciona a layer e as métricas ficam
+  desligadas.
+- **PHP**: `config/telemetry.php`. Só exporta com `OTEL_METRICS_EXPORTER=otlp`
+  (padrão `none`, usado em dev e nos testes). A API exporta no fim de cada
+  request; as Lambdas, no fim de cada invocação.
+
+Secret do repositório necessário: `NEW_RELIC_LICENSE_KEY` (ingest license key,
+a mesma do `nri-bundle` no repositório Kubernetes).
+
+| Métrica | Tipo | Atributos | Origem |
+|---|---|---|---|
+| `service_order.received` | counter | `service_order.status` | O.S. importada (`ServiceOrderCreated`) |
+| `service_order.status.transitions` | counter | `service_order.previous_status`, `service_order.status`, `service_order.event_type` | status aplicado no MS |
+| `service_order.service.started` / `.finished` | counter | — | início/fim de serviço pela API |
+| `service_order.service.duration` | histogram (s) | — | início → fim de um serviço |
+| `service_order.execution.duration` | histogram (s) | — | primeiro início → último fim da O.S. |
+| `service_order.execution.rejected` | counter | `service_order.operation` (`start`/`finish`) | regra de negócio recusou (422) |
+| `messaging.process.duration` | histogram (s) | `messaging.destination.name`, `service_order.event_type`, `outcome` (`processed`/`skipped`/`invalid`/`failed`), `error.type` | cada mensagem SQS consumida |
+| `messaging.client.sent.messages` | counter | `messaging.destination.name`, `service_order.event_type`, `error.type` | publicação da outbox |
+| `outbox.publish.lag` | histogram (s) | idem | gravação na outbox → envio ao SQS |
+| `http.server.request.duration` | histogram (s) | `http.request.method`, `http.route`, `http.response.status_code` | rotas da API (sem `/up`) |
+
+Os atributos não levam IDs de O.S./cliente/veículo (cardinalidade); esses ficam
+nos logs. Exemplos de NRQL:
+
+```sql
+FROM Metric SELECT sum(service_order.status.transitions) WHERE service.name = 'services-ms' FACET service_order.status TIMESERIES
+FROM Metric SELECT percentile(service_order.service.duration, 50, 95) WHERE service.name = 'services-ms' TIMESERIES
+FROM Metric SELECT count(messaging.process.duration) WHERE service.name = 'services-ms' FACET outcome, messaging.destination.name
+```
+
 ---
 
 <p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>

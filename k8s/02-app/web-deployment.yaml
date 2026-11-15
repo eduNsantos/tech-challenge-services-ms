@@ -29,6 +29,12 @@ spec:
                 name: services-ms-config
             - secretRef:
                 name: services-ms-secret
+          env:
+            # Atributos k8s.* do resource OpenTelemetry (o pod name vem do hostname).
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           livenessProbe:
             httpGet:
               path: /up

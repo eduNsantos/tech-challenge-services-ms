@@ -45,3 +45,22 @@ variable "bref_php_layer_version" {
   type        = number
   default     = 43
 }
+
+variable "new_relic_license_key" {
+  description = "License key (ingest) do New Relic usada pelo OTel Collector das Lambdas. Vazia desliga as métricas."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "new_relic_otlp_endpoint" {
+  description = "Endpoint OTLP do New Relic (US: https://otlp.nr-data.net, EU: https://otlp.eu01.nr-data.net)"
+  type        = string
+  default     = "https://otlp.nr-data.net"
+}
+
+variable "otel_collector_layer_version" {
+  description = "Versão da layer opentelemetry-collector (github.com/open-telemetry/opentelemetry-lambda, release layer-collector/X.Y.Z), com underscores"
+  type        = string
+  default     = "0_24_0"
+}

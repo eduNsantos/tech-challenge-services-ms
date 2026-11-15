@@ -16,6 +16,11 @@ class ServiceOrdersCreatedHandler extends FifoSqsHandler
         private readonly ProcessServiceOrderApprovalChanged $approvalProcessor,
     ) {}
 
+    protected function eventTypes(): array
+    {
+        return [ProcessServiceOrderCreated::TYPE, ProcessServiceOrderApprovalChanged::TYPE];
+    }
+
     protected function process(array $payload): bool
     {
         return match ($payload['type'] ?? null) {

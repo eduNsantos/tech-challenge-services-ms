@@ -2,6 +2,7 @@
 
 namespace App\Lambda;
 
+use App\Application\Telemetry\Metrics;
 use Bref\Context\Context;
 use Bref\Event\Sqs\SqsEvent;
 use Bref\Event\Sqs\SqsHandler;
@@ -26,7 +27,27 @@ abstract class FifoSqsHandler extends SqsHandler
      */
     abstract protected function process(array $payload): bool;
 
+    /**
+     * Tipos de evento aceitos pelo consumer; qualquer outro vira "unknown" na métrica
+     * para não criar séries com valores arbitrários vindos da mensagem.
+     *
+     * @return list<string>
+     */
+    abstract protected function eventTypes(): array;
+
     public function handleSqs(SqsEvent $event, Context $context): void
+    {
+        $metrics = app(Metrics::class);
+
+        try {
+            $this->processRecords($event, $metrics);
+        } finally {
+            // O processo da Lambda é reaproveitado: exporta ao fim de cada invocação.
+            $metrics->flush();
+        }
+    }
+
+    private function processRecords(SqsEvent $event, Metrics $metrics): void
     {
         $failed = false;
 
@@ -37,6 +58,11 @@ abstract class FifoSqsHandler extends SqsHandler
                 continue;
             }
 
+            $startedAt = hrtime(true);
+            $payload = null;
+            $outcome = 'failed';
+            $errorType = null;
+
             try {
                 $payload = json_decode($record->getBody(), true, 512, JSON_THROW_ON_ERROR);
 
@@ -45,6 +71,7 @@ abstract class FifoSqsHandler extends SqsHandler
                 }
 
                 $processed = $this->process($payload);
+                $outcome = $processed ? 'processed' : 'skipped';
 
                 logger()->info(($processed ? 'Processed ' : 'Skipped ').static::class, [
                     'event_id' => $payload['event_id'] ?? null,
@@ -58,12 +85,30 @@ abstract class FifoSqsHandler extends SqsHandler
                     'message_id' => $record->getMessageId(),
                 ]);
                 $failed = true;
+                $outcome = 'invalid';
+                $errorType = $e::class;
                 $this->markAsFailed($record);
             } catch (Throwable $e) {
                 report($e);
                 $failed = true;
+                $errorType = $e::class;
                 $this->markAsFailed($record);
+            } finally {
+                $metrics->messageProcessed(
+                    $record->getQueueName(),
+                    $this->eventType($payload),
+                    $outcome,
+                    (hrtime(true) - $startedAt) / 1e9,
+                    $errorType,
+                );
             }
         }
+    }
+
+    private function eventType(mixed $payload): string
+    {
+        $type = is_array($payload) ? ($payload['type'] ?? null) : null;
+
+        return in_array($type, $this->eventTypes(), true) ? $type : 'unknown';
     }
 }
