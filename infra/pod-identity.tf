@@ -1,6 +1,7 @@
 locals {
   pod_identity_workloads = {
     consumer = {
+      namespace       = "services-ms"
       service_account = "services-ms-consumer"
       queue_arn       = aws_sqs_queue.main["service_orders_created"].arn
       actions = [
@@ -11,9 +12,16 @@ locals {
       ]
     }
     outbox = {
+      namespace       = "services-ms"
       service_account = "services-ms-outbox"
       queue_arn       = aws_sqs_queue.main["service_order_status_changed"].arn
       actions         = ["sqs:SendMessage"]
+    }
+    status-consumer = {
+      namespace       = "postech"
+      service_account = "postech-status-consumer"
+      queue_arn       = aws_sqs_queue.main["service_order_status_changed"].arn
+      actions         = ["sqs:ReceiveMessage", "sqs:DeleteMessage"]
     }
   }
 }
@@ -41,7 +49,7 @@ resource "aws_iam_role" "pod_identity" {
       Condition = {
         StringEquals = {
           "aws:RequestTag/eks-cluster-name"           = data.aws_eks_node_group.main.cluster_name
-          "aws:RequestTag/kubernetes-namespace"       = "services-ms"
+          "aws:RequestTag/kubernetes-namespace"       = each.value.namespace
           "aws:RequestTag/kubernetes-service-account" = each.value.service_account
         }
       }
@@ -68,7 +76,7 @@ resource "aws_eks_pod_identity_association" "workload" {
   for_each = var.enable_pod_identity ? local.pod_identity_workloads : {}
 
   cluster_name    = data.aws_eks_node_group.main.cluster_name
-  namespace       = "services-ms"
+  namespace       = each.value.namespace
   service_account = each.value.service_account
   role_arn        = aws_iam_role.pod_identity[each.key].arn
 
