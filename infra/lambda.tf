@@ -48,37 +48,81 @@ locals {
     "sqs:ChangeMessageVisibility",
   ]
 
+  # trigger_queue: fila que aciona a Lambda (event source mapping). schedule: expressão do EventBridge.
+  # sqs_statements: permissões mínimas de SQS de cada função.
   lambda_functions = {
     # Monólito -> MS: criação da O.S. (e eventos legados de aprovação).
     service-orders-consumer = {
-      handler   = "App\\Lambda\\ServiceOrdersCreatedHandler"
-      timeout   = 30
-      queue_key = "service_orders_created"
-      actions   = local.sqs_consumer_actions
-      env       = {}
+      handler       = "App\\Lambda\\ServiceOrdersCreatedHandler"
+      timeout       = 30
+      trigger_queue = "service_orders_created"
+      schedule      = null
+      sqs_statements = [{
+        actions   = local.sqs_consumer_actions
+        resources = [aws_sqs_queue.main["service_orders_created"].arn]
+      }]
+      env = {}
     }
     # Aplicação -> MS: ServiceOrderStatusChanged.
     status-consumer = {
-      handler   = "App\\Lambda\\ServiceOrderStatusChangedHandler"
-      timeout   = 30
-      queue_key = "service_order_status_changed"
-      actions   = local.sqs_consumer_actions
-      env       = {}
+      handler       = "App\\Lambda\\ServiceOrderStatusChangedHandler"
+      timeout       = 30
+      trigger_queue = "service_order_status_changed"
+      schedule      = null
+      sqs_statements = [{
+        actions   = local.sqs_consumer_actions
+        resources = [aws_sqs_queue.main["service_order_status_changed"].arn]
+      }]
+      env = {}
     }
     # MS -> aplicação: outbox de início/fim de execução, agendado a cada minuto.
     outbox-publisher = {
-      handler   = "App\\Lambda\\PublishOutboxHandler"
-      timeout   = 60
-      queue_key = "service_order_execution"
-      actions   = ["sqs:SendMessage"]
+      handler       = "App\\Lambda\\PublishOutboxHandler"
+      timeout       = 60
+      trigger_queue = null
+      schedule      = "rate(1 minute)"
+      sqs_statements = [{
+        actions   = ["sqs:SendMessage"]
+        resources = [aws_sqs_queue.main["service_order_execution"].arn]
+      }]
       env = {
         SQS_SERVICE_ORDER_EXECUTION_URL = aws_sqs_queue.main["service_order_execution"].url
+      }
+    }
+    # Nova tentativa: devolve as mensagens das DLQs da execução para a fila de origem (ver DeadLetterRedriver).
+    dlq-redriver = {
+      handler       = "App\\Lambda\\RedriveDeadLettersHandler"
+      timeout       = 60
+      trigger_queue = null
+      schedule      = var.dlq_redrive_schedule
+      sqs_statements = [
+        {
+          actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+          resources = [for q in aws_sqs_queue.dlq : q.arn]
+        },
+        {
+          actions   = ["sqs:SendMessage"]
+          resources = [for q in aws_sqs_queue.main : q.arn]
+        },
+      ]
+      env = {
+        SQS_REDRIVE_QUEUES       = jsonencode({ for k, q in aws_sqs_queue.dlq : q.url => aws_sqs_queue.main[k].url })
+        SQS_REDRIVE_MAX_ATTEMPTS = tostring(var.dlq_redrive_max_attempts)
       }
     }
   }
 
   sqs_triggered_functions = {
-    for name, fn in local.lambda_functions : name => fn if name != "outbox-publisher"
+    for name, fn in local.lambda_functions : name => fn if fn.trigger_queue != null
+  }
+
+  scheduled_functions = {
+    for name, fn in local.lambda_functions : name => fn if fn.schedule != null
+  }
+
+  schedule_descriptions = {
+    outbox-publisher = "Publica a outbox do Services MS na fila de execucao"
+    dlq-redriver     = "Reenvia as mensagens das DLQs da execucao para nova tentativa"
   }
 }
 
@@ -116,10 +160,10 @@ resource "aws_iam_role_policy" "lambda_sqs" {
   role = aws_iam_role.lambda[each.key].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
+    Statement = [for s in each.value.sqs_statements : {
       Effect   = "Allow"
-      Action   = each.value.actions
-      Resource = aws_sqs_queue.main[each.value.queue_key].arn
+      Action   = s.actions
+      Resource = s.resources
     }]
   })
 }
@@ -160,7 +204,7 @@ resource "aws_lambda_function" "worker" {
 resource "aws_lambda_event_source_mapping" "sqs" {
   for_each = local.sqs_triggered_functions
 
-  event_source_arn        = aws_sqs_queue.main[each.value.queue_key].arn
+  event_source_arn        = aws_sqs_queue.main[each.value.trigger_queue].arn
   function_name           = aws_lambda_function.worker[each.key].arn
   batch_size              = 10
   function_response_types = ["ReportBatchItemFailures"]
@@ -172,17 +216,23 @@ resource "aws_lambda_event_source_mapping" "sqs" {
   }
 }
 
-# Publisher: o EventBridge invoca a cada minuto; a invocação publica em ciclos
-# até perto do timeout. Um lock no MySQL impede publishers concorrentes.
-resource "aws_cloudwatch_event_rule" "outbox_publisher" {
-  name                = "${var.project_name}-outbox-publisher"
-  description         = "Publica a outbox do Services MS na fila de execucao"
-  schedule_expression = "rate(1 minute)"
+# Agendadas pelo EventBridge:
+# - publisher: a cada minuto; a invocação publica em ciclos até perto do timeout.
+#   Um lock no MySQL impede publishers concorrentes.
+# - dlq-redriver: var.dlq_redrive_schedule; o intervalo é o tempo de espera entre as novas tentativas.
+resource "aws_cloudwatch_event_rule" "schedule" {
+  for_each = local.scheduled_functions
+
+  name                = "${var.project_name}-${each.key}"
+  description         = local.schedule_descriptions[each.key]
+  schedule_expression = each.value.schedule
 }
 
-resource "aws_cloudwatch_event_target" "outbox_publisher" {
-  rule = aws_cloudwatch_event_rule.outbox_publisher.name
-  arn  = aws_lambda_function.worker["outbox-publisher"].arn
+resource "aws_cloudwatch_event_target" "schedule" {
+  for_each = local.scheduled_functions
+
+  rule = aws_cloudwatch_event_rule.schedule[each.key].name
+  arn  = aws_lambda_function.worker[each.key].arn
 
   retry_policy {
     maximum_retry_attempts       = 0
@@ -190,17 +240,41 @@ resource "aws_cloudwatch_event_target" "outbox_publisher" {
   }
 }
 
-resource "aws_lambda_permission" "outbox_publisher_schedule" {
+resource "aws_lambda_permission" "schedule" {
+  for_each = local.scheduled_functions
+
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.worker["outbox-publisher"].function_name
+  function_name = aws_lambda_function.worker[each.key].function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.outbox_publisher.arn
+  source_arn    = aws_cloudwatch_event_rule.schedule[each.key].arn
 }
 
 # A próxima execução agendada já tenta de novo; retries assíncronos só sobreporiam invocações.
-resource "aws_lambda_function_event_invoke_config" "outbox_publisher" {
-  function_name                = aws_lambda_function.worker["outbox-publisher"].function_name
+resource "aws_lambda_function_event_invoke_config" "schedule" {
+  for_each = local.scheduled_functions
+
+  function_name                = aws_lambda_function.worker[each.key].function_name
   maximum_retry_attempts       = 0
   maximum_event_age_in_seconds = 60
+}
+
+moved {
+  from = aws_cloudwatch_event_rule.outbox_publisher
+  to   = aws_cloudwatch_event_rule.schedule["outbox-publisher"]
+}
+
+moved {
+  from = aws_cloudwatch_event_target.outbox_publisher
+  to   = aws_cloudwatch_event_target.schedule["outbox-publisher"]
+}
+
+moved {
+  from = aws_lambda_permission.outbox_publisher_schedule
+  to   = aws_lambda_permission.schedule["outbox-publisher"]
+}
+
+moved {
+  from = aws_lambda_function_event_invoke_config.outbox_publisher
+  to   = aws_lambda_function_event_invoke_config.schedule["outbox-publisher"]
 }

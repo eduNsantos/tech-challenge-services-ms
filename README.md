@@ -41,8 +41,13 @@ Os workers rodam em Lambda com PHP 8.4 via Bref (`bref/laravel-bridge`), reaprov
 | `services-ms-service-orders-consumer` | `App\Lambda\ServiceOrdersCreatedHandler` | Event source mapping da fila `service-orders-created` |
 | `services-ms-status-consumer` | `App\Lambda\ServiceOrderStatusChangedHandler` | Event source mapping da fila `service-order-status-changed` |
 | `services-ms-outbox-publisher` | `App\Lambda\PublishOutboxHandler` | EventBridge `rate(1 minute)` |
+| `services-ms-dlq-redriver` | `App\Lambda\RedriveDeadLettersHandler` | EventBridge `var.dlq_redrive_schedule` (padrão `rate(15 minutes)`) |
 
 - Consumers: as mensagens com falha (inválidas ou erros transitórios) voltam por `batchItemFailures`. Após 3 recebimentos, o redrive manda a mensagem para a DLQ. Em filas FIFO, o processamento para na primeira falha do lote e devolve também as mensagens seguintes, para não quebrar a ordem.
+- **Falha na execução → nova tentativa** (passo de recuperação da saga): a Lambda `dlq-redriver` lê as DLQs das 3 filas da execução (`service-orders-created`, `service-order-status-changed` e `service-order-execution`, esta consumida pela aplicação) e devolve cada mensagem à fila de origem, com o mesmo `MessageGroupId` (id da O.S.) e o atributo `RedriveAttempt` incrementado. Os consumers são idempotentes (`processed_messages` e `sequence`), então reenviar é seguro.
+  - Cada mensagem tem 3 recebimentos por rodada e até `var.dlq_redrive_max_attempts` (padrão 4) novas rodadas, com o intervalo do agendamento entre elas. Com os padrões, são 15 tentativas em cerca de 1 h. Isso cobre falhas temporárias como RDS indisponível, deploy fora de ordem ou migrations atrasadas.
+  - Esgotadas as tentativas, a mensagem fica na DLQ, gera `Dead-letter message exhausted its retries` no log e a métrica `messaging.dead_letter.redrives{outcome=exhausted}` a cada rodada. Como a DLQ é FIFO, as mensagens seguintes da mesma O.S. ficam retidas atrás dela e a ordem não se perde. Nesse caso é preciso agir manualmente (ver [Mensagens na DLQ](#mensagens-na-dlq)).
+  - Se o reenvio falhar, a mensagem não é apagada da DLQ e volta na próxima rodada (`outcome=failed`).
 - Publisher: cada invocação publica em ciclos de 2 s até 10 s antes do timeout (60 s). Um `GET_LOCK` no MySQL garante um único publisher, mesmo com invocações sobrepostas.
 - Concorrência: a conta tem limite de 10 execuções simultâneas, então não há reserved concurrency. Cada event source mapping tem `maximum_concurrency = 2`.
 - Rede: as Lambdas rodam fora da VPC e acessam o RDS público do laboratório, cujo SG `rds` libera a 3306. Assim alcançam o SQS sem NAT nem VPC endpoint.
@@ -296,11 +301,13 @@ Lambdas ──OTLP localhost──> layer opentelemetry-collector (extension) �
 | `messaging.process.duration` | histogram (s) | `messaging.destination.name`, `service_order.event_type`, `outcome` (`processed`/`skipped`/`invalid`/`failed`), `error.type` | cada mensagem SQS consumida |
 | `messaging.client.sent.messages` | counter | `messaging.destination.name`, `service_order.event_type`, `error.type` | publicação da outbox |
 | `outbox.publish.lag` | histogram (s) | idem | gravação na outbox → envio ao SQS |
+| `messaging.dead_letter.redrives` | counter | `messaging.destination.name` (fila de origem), `outcome` (`redriven`/`exhausted`/`failed`) | nova tentativa das DLQs pela `dlq-redriver` |
 | `http.server.request.duration` | histogram (s) | `http.request.method`, `http.route`, `http.response.status_code` | rotas da API (sem `/up`) |
 
 ```sql
 FROM Metric SELECT sum(service_order.status.transitions) WHERE service.name = 'services-ms' FACET service_order.status TIMESERIES
 FROM Metric SELECT count(messaging.process.duration) WHERE service.name = 'services-ms' FACET outcome, messaging.destination.name
+FROM Metric SELECT sum(messaging.dead_letter.redrives) WHERE service.name = 'services-ms' FACET outcome, messaging.destination.name TIMESERIES
 FROM Metric SELECT percentile(outbox.publish.lag, 50, 95) WHERE service.name = 'services-ms' TIMESERIES
 -- Validar se as métricas chegam
 FROM Metric SELECT count(*) WHERE service.name = 'services-ms' SINCE 30 minutes ago FACET metricName
@@ -313,7 +320,7 @@ Sem métricas das Lambdas: confira a layer do collector e `OTEL_METRICS_EXPORTER
 ### Logs das Lambdas
 
 ```bash
-# nomes: service-orders-consumer, status-consumer, outbox-publisher
+# nomes: service-orders-consumer, status-consumer, outbox-publisher, dlq-redriver
 aws logs tail /aws/lambda/services-ms-status-consumer --follow
 aws logs tail /aws/lambda/services-ms-service-orders-consumer --since 1h --filter-pattern "Invalid SQS message"
 ```
@@ -330,10 +337,14 @@ kubectl get pods,hpa -n services-ms
 ```bash
 cd infra && terraform output sqs_dlq_urls
 aws sqs get-queue-attributes --queue-url <dlq_url> --attribute-names ApproximateNumberOfMessages
-aws sqs receive-message --queue-url <dlq_url> --max-number-of-messages 10
-# Reprocessar (redrive de volta para a fila de origem)
-aws sqs start-message-move-task --source-arn <dlq_arn>
+aws sqs receive-message --queue-url <dlq_url> --max-number-of-messages 10 --message-attribute-names All
+# Ver o que a nova tentativa automática fez
+aws logs tail /aws/lambda/services-ms-dlq-redriver --since 1h
 ```
+
+A `dlq-redriver` já devolve as mensagens automaticamente. Só sobra na DLQ o que esgotou as tentativas (`RedriveAttempt` igual ao limite).
+Corrija a causa e reprocesse manualmente com `aws sqs start-message-move-task --source-arn <dlq_arn>`. O move manual mantém o `RedriveAttempt`, então a mensagem só tem os 3 recebimentos da fila: se falhar de novo, volta para a DLQ como esgotada.
+Para descartar uma mensagem inválida, apague-a da DLQ (`aws sqs delete-message`). Isso libera as mensagens seguintes da mesma O.S.
 
 ---
 

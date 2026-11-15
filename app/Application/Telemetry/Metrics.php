@@ -45,6 +45,8 @@ class Metrics
 
     private HistogramInterface $outboxLag;
 
+    private CounterInterface $deadLetterRedrives;
+
     private HistogramInterface $httpRequestDuration;
 
     public function __construct(private readonly MeterProviderInterface $provider)
@@ -84,6 +86,9 @@ class Metrics
         $this->outboxLag = $meter->createHistogram(
             'outbox.publish.lag', 's', 'Tempo entre a gravação na outbox e a publicação no SQS.',
             ['ExplicitBucketBoundaries' => self::LAG_BUCKETS],
+        );
+        $this->deadLetterRedrives = $meter->createCounter(
+            'messaging.dead_letter.redrives', '{message}', 'Mensagens das DLQs reenviadas (redriven), esgotadas (exhausted) ou com falha no reenvio (failed).',
         );
         $this->httpRequestDuration = $meter->createHistogram(
             'http.server.request.duration', 's', 'Duração das requests HTTP da API.',
@@ -156,6 +161,18 @@ class Metrics
         if ($errorType === null && $lagSeconds !== null) {
             $this->outboxLag->record(max(0, $lagSeconds), $attributes);
         }
+    }
+
+    /**
+     * @param  string  $outcome  redriven | exhausted | failed
+     */
+    public function deadLetterRedrive(string $queue, string $outcome): void
+    {
+        $this->deadLetterRedrives->add(1, [
+            'messaging.system' => 'aws_sqs',
+            'messaging.destination.name' => $queue,
+            'outcome' => $outcome,
+        ]);
     }
 
     public function httpRequest(string $method, ?string $route, int $statusCode, float $seconds): void

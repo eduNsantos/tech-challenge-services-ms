@@ -14,11 +14,13 @@ application ─outbox─> SQS service-orders-created.fifo ──> λ services-ms
 Mecânico ─JWT─> LB :8081 ─> API web (EKS, services-ms-web) ─ start/finish + outbox ──────────────┤
 EventBridge rate(1 min) ─> λ services-ms-outbox-publisher ─ lê outbox ───────────────────────────┘
                               └─> SQS service-order-execution.fifo ─> application (λ postech-execution-consumer)
+EventBridge rate(15 min) ─> λ services-ms-dlq-redriver ─ DLQs das 3 filas ─> fila de origem (nova tentativa)
 ```
 
 - Filas FIFO com `MessageGroupId` = id da O.S. e `MessageDeduplicationId` = `event_id`; DLQ `*-dlq.fifo` com `maxReceiveCount = 3`.
 - `service-order-status-changed` **inverteu de sentido** (antes MS → app; agora app → MS). Ver "Corte" no README.
 - Eventos de saída (mesma fila, grupo = id da O.S.): `ServiceOrderServiceStarted`/`ServiceOrderServiceFinished` em todo start/finish (com `service_order_service_id`, `user_id`, `started_at`/`finished_at`) e `ServiceOrderExecutionStarted`/`ServiceOrderExecutionFinished` no 1º início e no último fim. Tipo novo precisa entrar em `OutboxPublisher::SUPPORTED_TYPES` e ser aceito pelo consumer da aplicação **antes** do deploy do MS.
+- Falha ao processar (qualquer lado) → 3 recebimentos → DLQ → `dlq-redriver` devolve à fila de origem até `SQS_REDRIVE_MAX_ATTEMPTS` (atributo `RedriveAttempt`). Esgotou: fica na DLQ, segura o grupo FIFO e gera log/métrica `exhausted`.
 - Status aplicado só se `sequence > status_sequence`. Início de serviço só com O.S. em `em_execucao` e `status_sequence` preenchido.
 
 ### Status (`App\Domain\ServiceOrder\ServiceOrderStatus`)
@@ -35,7 +37,7 @@ recebida → aguardando_aprovacao
 | Workers | AWS Lambda `provided.al2` + layer Bref `php-84` (`bref/laravel-bridge`) |
 | API | EKS cluster `main`, namespace `services-ms`, Deployment `services-ms-web` (HPA 1–4), Service LoadBalancer `:8081 → :8000` |
 | Banco | RDS MySQL 8.4 `services-ms-mysql` (`db.t3.micro`, público no lab) |
-| Filas | SQS FIFO ×3 + DLQs |
+| Filas | SQS FIFO ×3 + DLQs (nova tentativa automática pela `dlq-redriver`) |
 | Infra | Terraform ≥ 1.10 (CI 1.10.5), backend S3 `techchallenge-tfstate-477478162709-v2`, key `services-ms/terraform.tfstate` |
 | Imagem | `ghcr.io/edunsantos/tech-challenge-services-ms:<sha>` |
 | Observabilidade | OpenTelemetry (métricas OTLP delta) → collector → New Relic |
@@ -51,9 +53,10 @@ app/
     ServiceOrder/ProcessServiceOrderApprovalChanged.php# legado — só O.S. sem status_sequence
     Execution/ServiceOrderExecution.php                # start/finish + grava outbox
     Outbox/OutboxPublisher.php                         # outbox → SQS (GET_LOCK, bloqueio por grupo)
+    Messaging/DeadLetterRedriver.php                   # DLQ → fila de origem (nova tentativa com limite)
     Telemetry/Metrics.php                              # instrumentos OTel
   Lambda/FifoSqsHandler.php            # base dos consumers (batchItemFailures, para na 1ª falha)
-  Lambda/*Handler.php                  # 3 Lambdas
+  Lambda/*Handler.php                  # 4 Lambdas (2 consumers, publisher, dlq-redriver)
   Http/Controllers/ServiceOrderExecutionController.php
   Http/Middleware/VerifyJwt.php        # HS256, claim sub → request attribute user_id
   Http/Middleware/RecordHttpMetrics.php

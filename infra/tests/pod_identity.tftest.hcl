@@ -93,10 +93,11 @@ run "lambda_workers_scoped_to_their_queues" {
 
   assert {
     condition = (
-      toset(keys(aws_lambda_function.worker)) == toset(["service-orders-consumer", "status-consumer", "outbox-publisher"]) &&
+      toset(keys(aws_lambda_function.worker)) == toset(["service-orders-consumer", "status-consumer", "outbox-publisher", "dlq-redriver"]) &&
       aws_lambda_function.worker["service-orders-consumer"].handler == "App\\Lambda\\ServiceOrdersCreatedHandler" &&
       aws_lambda_function.worker["status-consumer"].handler == "App\\Lambda\\ServiceOrderStatusChangedHandler" &&
       aws_lambda_function.worker["outbox-publisher"].handler == "App\\Lambda\\PublishOutboxHandler" &&
+      aws_lambda_function.worker["dlq-redriver"].handler == "App\\Lambda\\RedriveDeadLettersHandler" &&
       alltrue([for fn in aws_lambda_function.worker : fn.timeout <= 60])
     )
     error_message = "Cada worker deve ter sua Lambda, com timeout dentro do visibility timeout das filas (60s)."
@@ -106,7 +107,7 @@ run "lambda_workers_scoped_to_their_queues" {
     condition = (
       aws_lambda_event_source_mapping.sqs["service-orders-consumer"].event_source_arn == aws_sqs_queue.main["service_orders_created"].arn &&
       aws_lambda_event_source_mapping.sqs["status-consumer"].event_source_arn == aws_sqs_queue.main["service_order_status_changed"].arn &&
-      !contains(keys(aws_lambda_event_source_mapping.sqs), "outbox-publisher") &&
+      keys(aws_lambda_event_source_mapping.sqs) == ["service-orders-consumer", "status-consumer"] &&
       alltrue([for m in aws_lambda_event_source_mapping.sqs : contains(m.function_response_types, "ReportBatchItemFailures")])
     )
     error_message = "Os consumers devem ser acionados pelas suas filas e reportar falhas por mensagem."
@@ -114,19 +115,38 @@ run "lambda_workers_scoped_to_their_queues" {
 
   assert {
     condition = (
-      jsondecode(aws_iam_role_policy.lambda_sqs["service-orders-consumer"].policy).Statement[0].Resource == aws_sqs_queue.main["service_orders_created"].arn &&
+      jsondecode(aws_iam_role_policy.lambda_sqs["service-orders-consumer"].policy).Statement[0].Resource == [aws_sqs_queue.main["service_orders_created"].arn] &&
       !contains(jsondecode(aws_iam_role_policy.lambda_sqs["service-orders-consumer"].policy).Statement[0].Action, "sqs:SendMessage") &&
-      jsondecode(aws_iam_role_policy.lambda_sqs["status-consumer"].policy).Statement[0].Resource == aws_sqs_queue.main["service_order_status_changed"].arn &&
+      jsondecode(aws_iam_role_policy.lambda_sqs["status-consumer"].policy).Statement[0].Resource == [aws_sqs_queue.main["service_order_status_changed"].arn] &&
       !contains(jsondecode(aws_iam_role_policy.lambda_sqs["status-consumer"].policy).Statement[0].Action, "sqs:SendMessage") &&
       jsondecode(aws_iam_role_policy.lambda_sqs["outbox-publisher"].policy).Statement[0].Action == ["sqs:SendMessage"] &&
-      jsondecode(aws_iam_role_policy.lambda_sqs["outbox-publisher"].policy).Statement[0].Resource == aws_sqs_queue.main["service_order_execution"].arn
+      jsondecode(aws_iam_role_policy.lambda_sqs["outbox-publisher"].policy).Statement[0].Resource == [aws_sqs_queue.main["service_order_execution"].arn]
     )
     error_message = "As roles das Lambdas devem ter acesso mínimo às suas respectivas filas."
   }
 
   assert {
-    condition     = aws_cloudwatch_event_rule.outbox_publisher.schedule_expression == "rate(1 minute)"
+    condition     = aws_cloudwatch_event_rule.schedule["outbox-publisher"].schedule_expression == "rate(1 minute)"
     error_message = "O publisher da outbox deve ser agendado a cada minuto."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_event_rule.schedule["dlq-redriver"].schedule_expression == "rate(15 minutes)" &&
+      aws_lambda_function.worker["dlq-redriver"].environment[0].variables["SQS_REDRIVE_MAX_ATTEMPTS"] == "4" &&
+      length(jsondecode(aws_lambda_function.worker["dlq-redriver"].environment[0].variables["SQS_REDRIVE_QUEUES"])) == 3
+    )
+    error_message = "O redriver deve rodar a cada 15 minutos sobre as 3 DLQs da execução."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_iam_role_policy.lambda_sqs["dlq-redriver"].policy).Statement[0].Resource == [for q in aws_sqs_queue.dlq : q.arn] &&
+      !contains(jsondecode(aws_iam_role_policy.lambda_sqs["dlq-redriver"].policy).Statement[0].Action, "sqs:SendMessage") &&
+      jsondecode(aws_iam_role_policy.lambda_sqs["dlq-redriver"].policy).Statement[1].Action == ["sqs:SendMessage"] &&
+      jsondecode(aws_iam_role_policy.lambda_sqs["dlq-redriver"].policy).Statement[1].Resource == [for q in aws_sqs_queue.main : q.arn]
+    )
+    error_message = "O redriver só lê/apaga nas DLQs e só envia para as filas de origem."
   }
 }
 
