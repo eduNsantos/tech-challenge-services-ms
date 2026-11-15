@@ -17,3 +17,7 @@ data:
   CACHE_STORE: "array"
   SESSION_DRIVER: "array"
   # Consumers e publisher SQS rodam em Lambda (infra/lambda.tf); a API não acessa filas.
+  # Métricas OpenTelemetry -> otel-collector (k8s/03-observability) -> New Relic.
+  OTEL_METRICS_EXPORTER: "otlp"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.services-ms.svc.cluster.local:4318"
+  OTEL_SERVICE_NAME: "services-ms"

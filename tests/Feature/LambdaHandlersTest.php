@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Application\Outbox\OutboxPublisher;
+use App\Application\Telemetry\Metrics;
 use App\Lambda\PublishOutboxHandler;
 use App\Lambda\ServiceOrdersCreatedHandler;
 use App\Lambda\ServiceOrderStatusChangedHandler;
@@ -128,6 +129,11 @@ class LambdaHandlersTest extends TestCase
         $this->assertDatabaseHas('service_orders', ['id' => 'order-1', 'status' => 'em_execucao', 'status_sequence' => 2]);
     }
 
+    private function publisher(SqsClient $client): OutboxPublisher
+    {
+        return app()->make(OutboxPublisher::class, ['client' => $client]);
+    }
+
     private function outboxEvent(string $eventId, string $group, string $type = 'ServiceOrderExecutionStarted'): void
     {
         DB::table('outbox')->insert([
@@ -159,7 +165,7 @@ class LambdaHandlersTest extends TestCase
             return null;
         });
 
-        $this->assertSame(2, (new OutboxPublisher($client))->publishPending());
+        $this->assertSame(2, $this->publisher($client)->publishPending());
         $this->assertSame(
             ['event-b1'],
             DB::table('outbox')->whereNull('published_at')->pluck('event_id')->all(),
@@ -174,7 +180,7 @@ class LambdaHandlersTest extends TestCase
         $client = Mockery::mock(SqsClient::class);
         $client->shouldReceive('sendMessage')->once();
 
-        $handler = new PublishOutboxHandler(new OutboxPublisher($client), sleepSeconds: 0);
+        $handler = new PublishOutboxHandler($this->publisher($client), app(Metrics::class), sleepSeconds: 0);
 
         // 10,1s restantes: um único ciclo cabe antes da margem de segurança de 10s.
         $this->assertSame(['published' => 1], $handler->handle([], $this->context(10_100)));

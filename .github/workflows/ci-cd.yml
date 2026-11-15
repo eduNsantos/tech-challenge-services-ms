@@ -108,6 +108,7 @@ jobs:
         env:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+          TF_VAR_new_relic_license_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
         run: terraform plan -input=false -var=enable_pod_identity=true -out=tfplan
 
       - uses: azure/setup-kubectl@v4
@@ -127,6 +128,7 @@ jobs:
         env:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+          TF_VAR_new_relic_license_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
         run: terraform apply -input=false -auto-approve tfplan
 
   build:
@@ -229,6 +231,28 @@ jobs:
             --docker-username="$GHCR_USERNAME" \
             --docker-password="$GHCR_TOKEN" \
             --dry-run=client -o yaml | kubectl apply -f -
+
+      # Collector antes do rollout: o pod web exporta métricas para ele desde o início.
+      - name: Deploy OpenTelemetry Collector
+        env:
+          NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+        run: |
+          set -euo pipefail
+          : "${NEW_RELIC_LICENSE_KEY:?NEW_RELIC_LICENSE_KEY is required}"
+
+          kubectl create secret generic otel-collector-secret \
+            --namespace "$NAMESPACE" \
+            --from-literal=NEW_RELIC_LICENSE_KEY="$NEW_RELIC_LICENSE_KEY" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          manifest=k8s/03-observability/otel-collector.yaml
+          checksum=$( { cat "$manifest"; printf '%s' "$NEW_RELIC_LICENSE_KEY"; } | sha256sum | cut -c1-16)
+
+          sed -e "s|<CONFIG_CHECKSUM>|${checksum}|" \
+              -e "s|<EKS_CLUSTER_NAME>|${EKS_CLUSTER_NAME}|" \
+              "$manifest" | kubectl apply -f -
+
+          kubectl rollout status deployment/otel-collector -n "$NAMESPACE" --timeout=180s
 
       - name: Run migrations
         run: |

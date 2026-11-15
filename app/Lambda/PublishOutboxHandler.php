@@ -3,6 +3,7 @@
 namespace App\Lambda;
 
 use App\Application\Outbox\OutboxPublisher;
+use App\Application\Telemetry\Metrics;
 use Bref\Context\Context;
 use Bref\Event\Handler;
 
@@ -19,6 +20,7 @@ class PublishOutboxHandler implements Handler
 
     public function __construct(
         private readonly OutboxPublisher $publisher,
+        private readonly Metrics $metrics,
         private readonly int $sleepSeconds = 2,
     ) {}
 
@@ -26,6 +28,15 @@ class PublishOutboxHandler implements Handler
      * @return array{published: int}
      */
     public function handle(mixed $event, Context $context): array
+    {
+        try {
+            return ['published' => $this->publishUntilTimeout($context)];
+        } finally {
+            $this->metrics->flush();
+        }
+    }
+
+    private function publishUntilTimeout(Context $context): int
     {
         $total = 0;
 
@@ -44,7 +55,7 @@ class PublishOutboxHandler implements Handler
             }
         } while ($this->hasTimeFor($context, 0));
 
-        return ['published' => $total];
+        return $total;
     }
 
     private function hasTimeFor(Context $context, int $ms): bool

@@ -2,19 +2,23 @@
 
 namespace App\Application\Execution;
 
+use App\Application\Telemetry\Metrics;
 use App\Domain\ServiceOrder\ServiceOrderStatus;
 use App\Models\ServiceOrder;
 use App\Models\ServiceOrderService;
 use DomainException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class ServiceOrderExecution
 {
+    public function __construct(private readonly Metrics $metrics) {}
+
     public function startService(string $orderId, string $serviceId, string $userId): ServiceOrder
     {
-        return DB::transaction(function () use ($orderId, $serviceId, $userId) {
+        $order = DB::transaction(function () use ($orderId, $serviceId, $userId) {
             $order = $this->lockOrder($orderId);
             $service = $this->findService($order, $serviceId);
 
@@ -37,11 +41,19 @@ class ServiceOrderExecution
 
             return $order->fresh('services');
         });
+
+        // Só depois do commit: um rollback não pode virar métrica.
+        $this->metrics->serviceStarted();
+
+        return $order;
     }
 
     public function finishService(string $orderId, string $serviceId, string $userId): ServiceOrder
     {
-        return DB::transaction(function () use ($orderId, $serviceId, $userId) {
+        $serviceSeconds = 0.0;
+        $executionSeconds = null;
+
+        $order = DB::transaction(function () use ($orderId, $serviceId, $userId, &$serviceSeconds, &$executionSeconds) {
             $order = $this->lockOrder($orderId);
             $service = $this->findService($order, $serviceId);
 
@@ -53,14 +65,27 @@ class ServiceOrderExecution
                 throw new DomainException('The service was already finished.');
             }
 
-            $service->update(['finished_at' => now(), 'finished_user_id' => $userId]);
+            $finishedAt = now();
+            $service->update(['finished_at' => $finishedAt, 'finished_user_id' => $userId]);
+            $serviceSeconds = (float) $service->started_at->diffInSeconds($finishedAt);
 
             if (! $order->services()->whereNull('finished_at')->exists()) {
                 $this->recordExecutionEvent($order, 'ServiceOrderExecutionFinished');
+
+                $firstStartedAt = $order->services()->min('started_at');
+                $executionSeconds = (float) Carbon::parse($firstStartedAt)->diffInSeconds($finishedAt);
             }
 
             return $order->fresh('services');
         });
+
+        $this->metrics->serviceFinished($serviceSeconds);
+
+        if ($executionSeconds !== null) {
+            $this->metrics->executionFinished($executionSeconds);
+        }
+
+        return $order;
     }
 
     private function lockOrder(string $orderId): ServiceOrder

@@ -2,6 +2,7 @@
 
 namespace App\Application\ServiceOrder;
 
+use App\Application\Telemetry\Metrics;
 use App\Domain\ServiceOrder\ServiceOrder;
 use App\Domain\ServiceOrder\ServiceOrderContract;
 use App\Domain\ServiceOrder\ServiceOrderService;
@@ -18,6 +19,7 @@ class ProcessServiceOrderCreated
     public function __construct(
         private readonly ServiceOrderContract $serviceOrderRepository,
         private readonly ServiceOrderServiceContract $serviceOrderServiceRepository,
+        private readonly Metrics $metrics,
     ) {}
 
     /**
@@ -85,7 +87,13 @@ class ProcessServiceOrderCreated
             return false;
         }
 
-        return ! $orderAlreadyExists;
+        if ($orderAlreadyExists) {
+            return false;
+        }
+
+        $this->metrics->orderReceived($serviceOrder->status()->value);
+
+        return true;
     }
 
     private function buildService(string $serviceOrderId, mixed $service): ServiceOrderService

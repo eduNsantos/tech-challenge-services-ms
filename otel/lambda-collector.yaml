@@ -1,0 +1,29 @@
+# Config do OpenTelemetry Collector que roda como extension na Lambda
+# (layer opentelemetry-collector, ver infra/lambda.tf).
+#
+# O PHP exporta para localhost:4318 no fim de cada invocação; a layer adiciona
+# sozinha o processor decouple depois do batch, então o envio ao New Relic não
+# segura a resposta da função e é concluído antes de o ambiente congelar.
+# scripts/build-lambda.sh copia este arquivo para /var/task/collector.yaml.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: localhost:4318
+
+processors:
+  batch: {}
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NEW_RELIC_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NEW_RELIC_LICENSE_KEY}
+    compression: gzip
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/newrelic]
