@@ -87,6 +87,18 @@ jobs:
       - name: Verify AWS credentials
         run: aws sts get-caller-identity
 
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: mbstring, pdo_mysql, zip
+          tools: composer:v2
+          coverage: none
+
+      # Pacote das Lambdas (consumers e publisher); o Terraform compacta build/lambda.
+      - name: Build Lambda package
+        run: scripts/build-lambda.sh
+
       - name: Terraform Init
         working-directory: infra
         run: terraform init -input=false -reconfigure
@@ -97,6 +109,18 @@ jobs:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
         run: terraform plan -input=false -var=enable_pod_identity=true -out=tfplan
+
+      - uses: azure/setup-kubectl@v4
+
+      # Os workers do EKS foram substituídos pelas Lambdas. Removê-los antes do apply
+      # evita dois publishers da outbox ativos ao mesmo tempo.
+      - name: Remove legacy EKS workers
+        run: |
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          kubectl delete deployment services-ms-consumer services-ms-outbox services-ms-status-consumer \
+            -n "$NAMESPACE" --ignore-not-found --wait=true
+          kubectl delete serviceaccount services-ms-consumer services-ms-outbox services-ms-status-consumer \
+            -n "$NAMESPACE" --ignore-not-found
 
       - name: Terraform Apply
         working-directory: infra
@@ -178,8 +202,6 @@ jobs:
       - name: Apply config and secrets
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
-          SQS_SERVICE_ORDERS_CREATED_URL: ${{ secrets.SQS_SERVICE_ORDERS_CREATED_URL }}
-          SQS_SERVICE_ORDER_STATUS_CHANGED_URL: ${{ secrets.SQS_SERVICE_ORDER_STATUS_CHANGED_URL }}
           APP_KEY: ${{ secrets.APP_KEY }}
           DB_USERNAME: ${{ secrets.DB_USERNAME }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
@@ -187,9 +209,10 @@ jobs:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
+          set -euo pipefail
+          : "${DB_HOST:?DB_HOST is required}"
+
           sed -e "s|<RDS_ENDPOINT>|${DB_HOST}|" \
-              -e "s|<sqs_service_orders_created_url>|${SQS_SERVICE_ORDERS_CREATED_URL}|" \
-              -e "s|<sqs_service_order_status_changed_url>|${SQS_SERVICE_ORDER_STATUS_CHANGED_URL}|" \
               k8s/01-config/configmap.yaml | kubectl apply -f -
 
           kubectl create secret generic services-ms-secret \
@@ -293,10 +316,8 @@ jobs:
 
       - name: Deploy application
         run: |
-          for f in web-deployment workers-deployment web-service-hpa; do
+          for f in web-deployment web-service-hpa; do
             sed "s|${IMAGE}:latest|${IMAGE}:${GITHUB_SHA}|" "k8s/02-app/${f}.yaml" | kubectl apply -f -
           done
 
-          for d in services-ms-web services-ms-consumer services-ms-outbox; do
-            kubectl rollout status "deployment/${d}" -n "$NAMESPACE" --timeout=300s
-          done
+          kubectl rollout status deployment/services-ms-web -n "$NAMESPACE" --timeout=300s

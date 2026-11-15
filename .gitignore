@@ -38,6 +38,10 @@ infra/*.backup
 *.tfstate.*
 
 *tfvars*
-k8s/
+/k8s/*
+!/k8s/02-app/
+/k8s/02-app/*
+!/k8s/02-app/serviceaccounts.yaml
 
 infra/**/secret.yaml
+/build

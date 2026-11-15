@@ -12,16 +12,6 @@ use Illuminate\Support\Str;
 
 class ServiceOrderExecution
 {
-    public function changeStatus(string $orderId, ServiceOrderStatus $next): ServiceOrder
-    {
-        return DB::transaction(function () use ($orderId, $next) {
-            $order = $this->lockOrder($orderId);
-            $this->transition($order, $next);
-
-            return $order->fresh('services');
-        });
-    }
-
     public function startService(string $orderId, string $serviceId, string $userId): ServiceOrder
     {
         return DB::transaction(function () use ($orderId, $serviceId, $userId) {
@@ -34,13 +24,16 @@ class ServiceOrderExecution
 
             $status = ServiceOrderStatus::from($order->status);
 
-            if ($status === ServiceOrderStatus::AwaitingApproval) {
-                $this->transition($order, ServiceOrderStatus::InProgress);
-            } elseif ($status !== ServiceOrderStatus::InProgress) {
+            if ($status !== ServiceOrderStatus::InProgress) {
                 throw new DomainException("Cannot start a service while the order is {$status->value}.");
             }
 
+            $firstStart = ! $order->services()->whereNotNull('started_at')->exists();
             $service->update(['started_at' => now(), 'started_user_id' => $userId]);
+
+            if ($firstStart) {
+                $this->recordExecutionEvent($order, 'ServiceOrderExecutionStarted');
+            }
 
             return $order->fresh('services');
         });
@@ -63,7 +56,7 @@ class ServiceOrderExecution
             $service->update(['finished_at' => now(), 'finished_user_id' => $userId]);
 
             if (! $order->services()->whereNull('finished_at')->exists()) {
-                $this->transition($order, ServiceOrderStatus::Finished);
+                $this->recordExecutionEvent($order, 'ServiceOrderExecutionFinished');
             }
 
             return $order->fresh('services');
@@ -86,37 +79,26 @@ class ServiceOrderExecution
         return $service;
     }
 
-    // Grava a mudança de status e o evento de saída na mesma transação (outbox).
-    private function transition(ServiceOrder $order, ServiceOrderStatus $next): void
+    private function recordExecutionEvent(ServiceOrder $order, string $type): void
     {
-        $previous = ServiceOrderStatus::from($order->status);
-
-        if (! $previous->canTransitionTo($next)) {
-            throw new DomainException("Cannot change status from {$previous->value} to {$next->value}.");
+        if ($order->status_sequence === null) {
+            throw new DomainException('Service order status has not been synchronized from the application.');
         }
 
-        $order->update(['status' => $next->value]);
-
-        $services = $order->services()->get();
         $eventId = Str::uuid()->toString();
 
         DB::table('outbox')->insert([
             'event_id' => $eventId,
-            'type' => 'ServiceOrderStatusChanged',
+            'type' => $type,
             'group_id' => $order->id,
             'payload' => json_encode([
                 'event_id' => $eventId,
-                'type' => 'ServiceOrderStatusChanged',
+                'type' => $type,
                 'version' => 1,
                 'occurred_at' => now()->toIso8601String(),
                 'service_order_id' => $order->id,
-                'status' => $next->value,
-                'previous_status' => $previous->value,
-                'started_at' => $services->min('started_at')?->toIso8601String(),
-                'finished_at' => $next === ServiceOrderStatus::Finished
-                    ? $services->max('finished_at')?->toIso8601String()
-                    : null,
-            ]),
+                'status_sequence' => (int) $order->status_sequence,
+            ], JSON_THROW_ON_ERROR),
             'created_at' => now(),
             'updated_at' => now(),
         ]);

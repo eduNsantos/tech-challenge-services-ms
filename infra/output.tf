@@ -24,11 +24,21 @@ output "sqs_service_orders_created_url" {
 }
 
 output "sqs_service_order_status_changed_url" {
-  description = "URL da fila FIFO de mudança de status (MS -> monólito)"
+  description = "URL da fila FIFO de mudança de status (aplicação -> MS)"
   value       = aws_sqs_queue.main["service_order_status_changed"].url
+}
+
+output "sqs_service_order_execution_url" {
+  description = "URL da fila FIFO de início/fim de execução (MS -> aplicação)"
+  value       = aws_sqs_queue.main["service_order_execution"].url
 }
 
 output "sqs_dlq_urls" {
   description = "URLs das DLQs"
   value       = { for k, q in aws_sqs_queue.dlq : k => q.url }
+}
+
+output "lambda_function_names" {
+  description = "Lambdas dos consumers e do publisher do Services MS"
+  value       = { for k, fn in aws_lambda_function.worker : k => fn.function_name }
 }

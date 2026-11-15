@@ -1,29 +1,8 @@
 locals {
-  pod_identity_workloads = {
-    consumer = {
-      namespace       = "services-ms"
-      service_account = "services-ms-consumer"
-      queue_arn       = aws_sqs_queue.main["service_orders_created"].arn
-      actions = [
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes",
-        "sqs:ChangeMessageVisibility",
-      ]
-    }
-    outbox = {
-      namespace       = "services-ms"
-      service_account = "services-ms-outbox"
-      queue_arn       = aws_sqs_queue.main["service_order_status_changed"].arn
-      actions         = ["sqs:SendMessage"]
-    }
-    status-consumer = {
-      namespace       = "postech"
-      service_account = "postech-status-consumer"
-      queue_arn       = aws_sqs_queue.main["service_order_status_changed"].arn
-      actions         = ["sqs:ReceiveMessage", "sqs:DeleteMessage"]
-    }
-  }
+  # Os consumers e publishers do MS (lambda.tf) e da aplicação
+  # (tech-challenge-kubernetes/app-lambda) rodam em Lambda, com roles próprias.
+  # Nenhum workload do EKS acessa as filas; o mapa fica vazio.
+  pod_identity_workloads = {}
 }
 
 resource "aws_eks_addon" "pod_identity_agent" {

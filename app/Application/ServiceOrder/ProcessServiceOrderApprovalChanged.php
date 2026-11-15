@@ -2,7 +2,6 @@
 
 namespace App\Application\ServiceOrder;
 
-use App\Application\Execution\ServiceOrderExecution;
 use App\Domain\ServiceOrder\ServiceOrderStatus;
 use App\Models\ServiceOrder;
 use DateTimeImmutable;
@@ -15,8 +14,6 @@ use InvalidArgumentException;
 class ProcessServiceOrderApprovalChanged
 {
     public const TYPE = 'ServiceOrderApprovalChanged';
-
-    public function __construct(private readonly ServiceOrderExecution $execution) {}
 
     /**
      * @return bool true when the MS status was changed
@@ -59,11 +56,11 @@ class ProcessServiceOrderApprovalChanged
                     throw (new ModelNotFoundException)->setModel(ServiceOrder::class, [$orderId]);
                 }
 
-                if ($order->status !== $previousStatus) {
+                if ($order->status_sequence !== null || $order->status !== $previousStatus) {
                     return false;
                 }
 
-                $this->execution->changeStatus($orderId, $status);
+                $order->update(['status' => $status->value]);
 
                 return true;
             });

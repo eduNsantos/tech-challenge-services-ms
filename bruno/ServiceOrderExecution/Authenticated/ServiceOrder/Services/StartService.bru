@@ -1,0 +1,42 @@
+meta {
+  name: Start Service Execution
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/service-orders/{{serviceOrderId}}/services/{{serviceId}}/start
+  auth: bearer {{jwtToken}}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
+
+docs {
+  # Start Service Execution
+  
+  Marks a service as started within a service order. This records the start time and technician ID.
+  
+  ## Prerequisites
+  - Valid JWT token in `jwtToken` variable
+  - Service Order ID in `serviceOrderId` variable
+  - Service ID in `serviceId` variable
+  - User must be authenticated and have permission to execute services
+  
+  ## Path Parameters
+  - `serviceOrderId` - UUID of the service order
+  - `serviceId` - UUID of the service within the order
+  
+  ## Response
+  Returns the updated service order with the service status changed to "STARTED".
+  
+  ## Notes
+  - The JWT token's `user_id` is extracted and recorded as the technician
+  - A service can only be started once
+  - Starting a service begins time tracking
+  
+  ## Error Handling
+  - 422: Service already started or business rule violation
+}

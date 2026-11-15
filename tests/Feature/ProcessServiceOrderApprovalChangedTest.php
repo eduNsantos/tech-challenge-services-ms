@@ -42,17 +42,14 @@ class ProcessServiceOrderApprovalChangedTest extends TestCase
         ], $overrides);
     }
 
-    public function test_approval_moves_order_to_in_progress_and_writes_status_outbox(): void
+    public function test_legacy_approval_synchronizes_without_publishing_status(): void
     {
         $this->seedOrder();
 
         $this->assertTrue(app(ProcessServiceOrderApprovalChanged::class)->handle($this->payload('em_execucao')));
         $this->assertDatabaseHas('service_orders', ['id' => self::ORDER_ID, 'status' => 'em_execucao']);
 
-        $event = json_decode(DB::table('outbox')->first()->payload, true);
-        $this->assertSame('ServiceOrderStatusChanged', $event['type']);
-        $this->assertSame('aguardando_aprovacao', $event['previous_status']);
-        $this->assertSame('em_execucao', $event['status']);
+        $this->assertSame(0, DB::table('outbox')->count());
     }
 
     public function test_rejection_moves_order_to_diagnosis(): void
@@ -71,7 +68,7 @@ class ProcessServiceOrderApprovalChangedTest extends TestCase
 
         $this->assertTrue($processor->handle($payload));
         $this->assertFalse($processor->handle($payload));
-        $this->assertSame(1, DB::table('outbox')->count());
+        $this->assertSame(0, DB::table('outbox')->count());
     }
 
     public function test_stale_transition_is_ignored(): void

@@ -23,10 +23,10 @@ class ServiceOrderExecutionApiTest extends TestCase
         config(['services.jwt.secret' => self::SECRET]);
     }
 
-    private function seedOrder(string $status = 'aguardando_aprovacao'): void
+    private function seedOrder(string $status = 'em_execucao'): void
     {
         DB::table('service_orders')->insert([
-            'id' => self::ORDER, 'customer_id' => 'c', 'vehicle_id' => 'v', 'status' => $status,
+            'id' => self::ORDER, 'customer_id' => 'c', 'vehicle_id' => 'v', 'status' => $status, 'status_sequence' => 1,
             'services_total' => 200, 'creation_date' => now(), 'created_at' => now(), 'updated_at' => now(),
         ]);
 
@@ -64,7 +64,7 @@ class ServiceOrderExecutionApiTest extends TestCase
 
         $this->getJson('/service-orders/'.self::ORDER, $this->auth())
             ->assertOk()
-            ->assertJsonPath('data.status', 'aguardando_aprovacao')
+            ->assertJsonPath('data.status', 'em_execucao')
             ->assertJsonCount(2, 'data.services');
     }
 
@@ -73,7 +73,7 @@ class ServiceOrderExecutionApiTest extends TestCase
         $this->getJson('/service-orders/missing', $this->auth())->assertNotFound();
     }
 
-    public function test_first_start_moves_order_to_in_progress_and_writes_outbox(): void
+    public function test_first_start_records_execution_without_changing_status(): void
     {
         $this->seedOrder();
 
@@ -84,9 +84,8 @@ class ServiceOrderExecutionApiTest extends TestCase
         $this->assertDatabaseHas('service_order_services', ['id' => self::SVC_1, 'started_user_id' => '42']);
 
         $event = json_decode(DB::table('outbox')->first()->payload, true);
-        $this->assertSame('ServiceOrderStatusChanged', $event['type']);
-        $this->assertSame('aguardando_aprovacao', $event['previous_status']);
-        $this->assertSame('em_execucao', $event['status']);
+        $this->assertSame('ServiceOrderExecutionStarted', $event['type']);
+        $this->assertSame(1, $event['status_sequence']);
     }
 
     public function test_cannot_start_service_before_approval(): void
@@ -109,7 +108,7 @@ class ServiceOrderExecutionApiTest extends TestCase
         $this->postJson($base.'/start', [], $this->auth())->assertStatus(422);
     }
 
-    public function test_finishing_all_services_finishes_the_order(): void
+    public function test_finishing_all_services_records_execution_without_changing_order_status(): void
     {
         $this->seedOrder();
         $order = '/service-orders/'.self::ORDER.'/services/';
@@ -124,21 +123,17 @@ class ServiceOrderExecutionApiTest extends TestCase
 
         $this->postJson($order.self::SVC_2.'/finish', [], $this->auth())
             ->assertOk()
-            ->assertJsonPath('data.status', 'finalizada');
+            ->assertJsonPath('data.status', 'em_execucao');
 
         $this->assertSame(2, DB::table('outbox')->count());
+        $this->assertSame('ServiceOrderExecutionFinished', DB::table('outbox')->orderByDesc('id')->value('type'));
     }
 
-    public function test_patch_status_validates_state_machine(): void
+    public function test_status_cannot_be_changed_directly(): void
     {
         $this->seedOrder('finalizada');
 
-        $this->patchJson('/service-orders/'.self::ORDER.'/status', ['status' => 'recebida'], $this->auth())
-            ->assertStatus(422);
-        $this->patchJson('/service-orders/'.self::ORDER.'/status', ['status' => 'invalid'], $this->auth())
-            ->assertStatus(422);
         $this->patchJson('/service-orders/'.self::ORDER.'/status', ['status' => 'entregue'], $this->auth())
-            ->assertOk()
-            ->assertJsonPath('data.status', 'entregue');
+            ->assertNotFound();
     }
 }

@@ -3,12 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Application\Execution\ServiceOrderExecution;
-use App\Domain\ServiceOrder\ServiceOrderStatus;
 use App\Models\ServiceOrder;
 use DomainException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Validation\Rule;
 
 class ServiceOrderExecutionController extends Controller
 {
@@ -19,15 +17,6 @@ class ServiceOrderExecutionController extends Controller
     public function show(string $id): JsonResponse
     {
         return $this->respond(ServiceOrder::query()->with('services')->findOrFail($id));
-    }
-
-    public function updateStatus(Request $request, string $id): JsonResponse
-    {
-        $data = $request->validate([
-            'status' => ['required', 'string', Rule::enum(ServiceOrderStatus::class)],
-        ]);
-
-        return $this->guard(fn () => $this->execution->changeStatus($id, ServiceOrderStatus::from($data['status'])));
     }
 
     public function start(Request $request, string $id, string $serviceId): JsonResponse

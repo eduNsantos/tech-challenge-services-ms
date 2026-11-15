@@ -2,6 +2,7 @@ locals {
   fifo_queues = {
     service_orders_created       = "service-orders-created"
     service_order_status_changed = "service-order-status-changed"
+    service_order_execution      = "service-order-execution"
   }
 
   services_ms_sqs_actions = [
