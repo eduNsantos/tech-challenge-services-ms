@@ -1,0 +1,76 @@
+# Swagger UI do services-ms. O ConfigMap services-ms-openapi é gerado pelo CI a partir de openapi.yaml
+# (fonte única do contrato). <OPENAPI_CHECKSUM> força um novo rollout quando o contrato muda.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: services-ms-swagger
+  namespace: services-ms
+  labels:
+    app: services-ms-swagger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: services-ms-swagger
+  template:
+    metadata:
+      labels:
+        app: services-ms-swagger
+      annotations:
+        checksum/openapi: "<OPENAPI_CHECKSUM>"
+    spec:
+      containers:
+        - name: swagger-ui
+          image: swaggerapi/swagger-ui:v5.17.14
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SWAGGER_JSON
+              value: /app/openapi.yaml
+          volumeMounts:
+            - name: openapi-spec
+              mountPath: /app/openapi.yaml
+              subPath: openapi.yaml
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+      volumes:
+        - name: openapi-spec
+          configMap:
+            name: services-ms-openapi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: services-ms-swagger
+  namespace: services-ms
+  labels:
+    app: services-ms-swagger
+spec:
+  type: LoadBalancer
+  selector:
+    app: services-ms-swagger
+  ports:
+    - name: http
+      # O security group do EKS só libera 8080-8082. Cada Service LoadBalancer ganha um ELB próprio,
+      # então repetir a 8082 do Swagger do monólito não conflita.
+      port: 8082
+      targetPort: 8080
+      protocol: TCP
