@@ -40,3 +40,8 @@ variable "jwt_secret" {
   description = "secret do jwt"
   type        = string
 }
+variable "bref_php_layer_version" {
+  description = "Versão da layer php-84 do Bref na região (ver vendor/bref/bref/layers.json)"
+  type        = number
+  default     = 43
+}

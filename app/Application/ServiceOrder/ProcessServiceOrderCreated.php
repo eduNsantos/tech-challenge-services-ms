@@ -28,6 +28,11 @@ class ProcessServiceOrderCreated
     public function handle(array $payload): bool
     {
         $eventId = $this->requireString($payload, 'event_id');
+        $sequence = $payload['sequence'] ?? null;
+
+        if ($sequence !== null && (! is_int($sequence) || $sequence < 1)) {
+            throw new InvalidArgumentException('Invalid status sequence.');
+        }
 
         if (($payload['type'] ?? null) !== self::TYPE) {
             throw new InvalidArgumentException('Unexpected event type.');
@@ -54,7 +59,7 @@ class ProcessServiceOrderCreated
         try {
             $orderAlreadyExists = false;
 
-            DB::transaction(function () use ($eventId, $serviceOrder, $items, &$orderAlreadyExists) {
+            DB::transaction(function () use ($eventId, $serviceOrder, $items, $sequence, &$orderAlreadyExists) {
                 // A chave primária de processed_messages garante a idempotência.
                 DB::table('processed_messages')->insert([
                     'event_id' => $eventId,
@@ -68,6 +73,9 @@ class ProcessServiceOrderCreated
                 }
 
                 $this->serviceOrderRepository->save($serviceOrder);
+                DB::table('service_orders')->where('id', $serviceOrder->id())->update([
+                    'status_sequence' => $sequence,
+                ]);
 
                 foreach ($items as $item) {
                     $this->serviceOrderServiceRepository->save($item);

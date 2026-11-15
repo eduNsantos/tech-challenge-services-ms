@@ -1,0 +1,38 @@
+meta {
+  name: Get Service Order Details
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/service-orders/{{serviceOrderId}}
+  body: none
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
+
+docs {
+  # Get Service Order Details
+  
+  Retrieves detailed information about a specific service order, including all associated services.
+  
+  ## Prerequisites
+  - Valid JWT token in `jwtToken` variable
+  - Service Order ID in `serviceOrderId` variable
+  
+  ## Response
+  Returns the service order object with:
+  - Order basic information
+  - List of services with their statuses
+  - Service execution details (start/finish times, technician info)
+  
+  ## Example
+  ```
+  GET /api/service-orders/550e8400-e29b-41d4-a716-446655440000
+  Authorization: Bearer <jwt_token>
+  ```
+}

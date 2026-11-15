@@ -13,3 +13,4 @@ create_fifo() {
 
 create_fifo service-orders-created
 create_fifo service-order-status-changed
+create_fifo service-order-execution

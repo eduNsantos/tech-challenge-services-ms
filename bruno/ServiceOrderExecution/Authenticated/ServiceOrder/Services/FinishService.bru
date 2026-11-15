@@ -1,0 +1,45 @@
+meta {
+  name: Finish Service Execution
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/service-orders/{{serviceOrderId}}/services/{{serviceId}}/finish
+  body: none
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
+
+docs {
+  # Finish Service Execution
+  
+  Marks a service as completed/finished within a service order. This records the finish time.
+  
+  ## Prerequisites
+  - Valid JWT token in `jwtToken` variable
+  - Service Order ID in `serviceOrderId` variable
+  - Service ID in `serviceId` variable
+  - Service must have been started first
+  - User must be the same technician who started the service (or have override permissions)
+  
+  ## Path Parameters
+  - `serviceOrderId` - UUID of the service order
+  - `serviceId` - UUID of the service within the order
+  
+  ## Response
+  Returns the updated service order with the service status changed to "FINISHED".
+  
+  ## Notes
+  - Can only finish a service that has been started
+  - Recording the finish time completes time tracking
+  - May trigger downstream events (e.g., outbox messages, SQS notifications)
+  - If all services are finished, the order status may automatically update
+  
+  ## Error Handling
+  - 422: Service not started, already finished, or user permission denied
+}

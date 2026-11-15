@@ -1,19 +1,82 @@
 # Services MS
 
-Microsserviço de execução dos serviços da O.S. (status, início e fim de cada serviço).
+Microsserviço de execução dos serviços da O.S. (início e fim de cada serviço). O status da O.S. pertence à aplicação; o MS mantém uma cópia somente leitura.
 
-- Entrada: fila SQS FIFO `service-orders-created` (comando `php artisan sqs:consume-service-orders`), com eventos de criação e aprovação/rejeição ordenados por O.S.
-- Saída: fila SQS FIFO `service-order-status-changed`, via outbox (comando `php artisan outbox:publish`).
-- API (JWT HS256, mesmo `JWT_SECRET` do monólito): `GET /service-orders/{id}`, `PATCH /service-orders/{id}/status`, `POST /service-orders/{id}/services/{sid}/start|finish`.
-- O workflow deste repositório publica a imagem e implanta os manifests em `k8s/`; a infraestrutura AWS é gerenciada separadamente.
+- Entrada: fila SQS FIFO `service-orders-created` (Lambda `services-ms-service-orders-consumer`), com a criação da O.S.
+- Entrada: fila SQS FIFO `service-order-status-changed` (Lambda `services-ms-status-consumer`), com cada `ServiceOrderStatusChanged` publicado pela aplicação.
+- Saída: fila SQS FIFO `service-order-execution`, via outbox (Lambda `services-ms-outbox-publisher`), com `ServiceOrderExecutionStarted` e `ServiceOrderExecutionFinished`.
+- API (JWT HS256, mesmo `JWT_SECRET` do monólito): `GET /service-orders/{id}`, `POST /service-orders/{id}/services/{sid}/start|finish`. Não há rota para alterar o status.
+- O workflow deste repositório publica a imagem e implanta a API pelos manifests em `k8s/`. Os consumers e o publisher são Lambdas criadas pelo Terraform em `infra/`.
 
-O evento de aprovação/rejeição usa o contrato `ServiceOrderApprovalChanged` na mesma fila FIFO de criação (`MessageGroupId` = id da O.S.). Isso mantém a decisão atrás da criação para cada ordem. Aprovação sincroniza para `em_execucao` e rejeição para `em_diagnostico`; o MS publica a mudança de status na fila de retorno como nos demais fluxos.
+### Lambdas (consumers e publisher)
+
+Os workers rodam em Lambda com PHP 8.4 via [Bref](https://bref.sh) (`bref/laravel-bridge`), reaproveitando os casos de uso de `app/Application`. Os handlers ficam em `app/Lambda`:
+
+| Lambda | Handler | Gatilho |
+|---|---|---|
+| `services-ms-service-orders-consumer` | `App\Lambda\ServiceOrdersCreatedHandler` | Event source mapping da fila `service-orders-created` |
+| `services-ms-status-consumer` | `App\Lambda\ServiceOrderStatusChangedHandler` | Event source mapping da fila `service-order-status-changed` |
+| `services-ms-outbox-publisher` | `App\Lambda\PublishOutboxHandler` | EventBridge `rate(1 minute)` |
+
+- Consumers: as mensagens com falha (inválidas ou erros transitórios) voltam por `batchItemFailures`. Após 3 recebimentos, o redrive manda a mensagem para a DLQ. Em filas FIFO, o processamento para na primeira falha do lote e devolve também as mensagens seguintes, para não quebrar a ordem.
+- Publisher: cada invocação publica em ciclos de 2 s até 10 s antes do timeout (60 s). Um `GET_LOCK` no MySQL garante um único publisher, mesmo com invocações sobrepostas.
+- Concorrência: a conta tem limite de 10 execuções simultâneas, então não há reserved concurrency. Cada event source mapping tem `maximum_concurrency = 2`.
+- Rede: as Lambdas rodam fora da VPC e acessam o RDS público do laboratório, cujo SG `rds` libera a 3306. Assim alcançam o SQS sem NAT nem VPC endpoint.
+- Pacote: `scripts/build-lambda.sh` monta `build/lambda` com `composer install --no-dev`, e o Terraform compacta esse diretório. O CI roda o script antes do `terraform plan`. Para aplicar localmente, rode o script antes (exige PHP 8.4 e Composer). O `composer.json` mantém só o serviço SQS do `aws-sdk-php` para reduzir o pacote.
+- Layer: `arn:aws:lambda:us-east-1:534081306603:layer:php-84:<versão>`, definida em `var.bref_php_layer_version`. Ao atualizar o `bref/bref`, use a versão de `vendor/bref/bref/layers.json`.
+
+### Fluxo de status
+
+1. A aplicação grava o status e um `ServiceOrderStatusChanged` na outbox, na mesma transação. O campo `sequence` é o id da linha na outbox da aplicação. Esse id cresce a cada evento da O.S.
+2. O MS aplica o evento somente se `sequence` for maior que o `status_sequence` salvo. Eventos repetidos ou antigos são ignorados.
+3. Um serviço só pode ser iniciado com a O.S. em `em_execucao`. O primeiro início gera `ServiceOrderExecutionStarted`. A conclusão do último serviço gera `ServiceOrderExecutionFinished`. Os dois eventos carregam o `status_sequence` do momento.
+4. A aplicação ignora `ServiceOrderExecutionStarted`, pois a aprovação já leva a O.S. para `em_execucao`. Ela aplica `ServiceOrderExecutionFinished` e muda para `finalizada` somente se a O.S. ainda estiver em `em_execucao` e se `status_sequence` for o último evento de status dela. Se a aplicação mudou o status depois disso, o evento é descartado. A mudança para `finalizada` volta ao MS como um novo `ServiceOrderStatusChanged`.
+
+O.S. sem `status_sequence` (importadas antes desta mudança) recusam início/fim com 422 até receberem um evento de status. Para isso, rode `services-ms:sync-service-order-status` na aplicação (ver "Corte" abaixo). Os eventos legados `ServiceOrderApprovalChanged` ainda são aceitos na fila de criação, mas só alteram O.S. que ainda não têm `status_sequence`.
+
+### Corte (uma única vez)
+
+A fila `service-order-status-changed` inverteu de sentido: antes ia do MS para a aplicação e agora vai da aplicação para o MS. Ordem recomendada:
+
+1. Aplique o Terraform em `infra/` para criar `service-order-execution.fifo` e sua DLQ. Cadastre o secret `SQS_SERVICE_ORDER_EXECUTION_URL` neste repositório.
+2. Com a aplicação ainda na versão antiga, pare o outbox antigo do MS (`kubectl scale deployment services-ms-outbox -n services-ms --replicas=0`). Espere a fila `service-order-status-changed` esvaziar, ou seja, o consumidor antigo da aplicação processar o que restou.
+3. Implante o MS. O workflow remove os workers antigos do EKS (`services-ms-consumer`, `services-ms-outbox`, `services-ms-status-consumer`) antes do `terraform apply`, que cria as Lambdas. A migration `discard_legacy_status_outbox_events` marca como publicados os `ServiceOrderStatusChanged` antigos ainda pendentes na outbox do MS. Sem isso, o grupo da O.S. ficaria bloqueado no publisher. Atenção: o workflow roda as migrations no job de deploy, depois do `terraform apply`. Até elas terminarem, as Lambdas podem falhar por falta da coluna `status_sequence`, e as mensagens com 3 falhas vão para a DLQ. No corte, rode as migrations antes do apply ou faça o redrive da DLQ depois.
+4. Implante a aplicação pelo repositório Kubernetes. O workflow remove `postech-status-consumer` e os workers antigos da aplicação antes de aplicar a nova imagem. No mesmo workflow, depois das migrations, o job `lambdas` cria as Lambdas `postech-outbox-publisher` e `postech-execution-consumer` (`tech-challenge-kubernetes/app-lambda`). Confirme que `SERVICES_MS_ENABLED=true`, senão a aplicação não publica eventos.
+5. Na aplicação, rode `php artisan services-ms:backfill-service-orders` para O.S. ainda não importadas e depois `php artisan services-ms:sync-service-order-status`.
+6. Verifique as DLQs. Mensagens antigas no formato anterior, sem `sequence`, que chegarem ao novo consumidor do MS vão para a DLQ após 3 tentativas e podem ser descartadas.
+
+## Desenvolvimento local com Docker
+
+Copie `.env.example` para `.env` se ainda não existir e defina nele uma senha
+local não vazia para `SERVICES_MS_DB_PASSWORD`. Não compartilhe o arquivo `.env`.
+Depois execute:
+
+```bash
+docker compose build
+docker compose run --rm php composer install
+# Somente se APP_KEY ainda não estiver configurada:
+docker compose run --rm php php artisan key:generate
+docker compose run --rm php php artisan config:clear
+docker compose run --rm php php artisan migrate
+docker compose up -d
+```
+
+A API fica em `localhost:8000`, o MySQL em `127.0.0.1:3307` e o LocalStack em
+`localhost:4566`. No container, a aplicação usa o banco `services_ms` em `db`
+e as filas do LocalStack. A senha é aplicada na primeira criação do volume
+MySQL; alterá-la no `.env` não atualiza um banco já inicializado. O Compose
+inicia somente a API; os consumers e o publisher existem apenas como Lambdas
+(`app/Lambda`) e são cobertos por `tests/Feature/LambdaHandlersTest.php`.
 
 ## Infraestrutura
 
 O Terraform em `infra/` consulta a VPC `main` e as subnets `sub_a`/`sub_b` do
-repositório Kubernetes com data sources. O RDS do MS usa essa VPC, não é
-publicamente acessível e permite MySQL somente a partir do CIDR da VPC.
+repositório Kubernetes com data sources. O RDS do MS usa essa VPC; a configuração
+habilita acesso público e permite MySQL na porta 3306
+a partir de qualquer endereço IPv4, além do CIDR da VPC. Essa exposição foi
+solicitada apenas para o laboratório e não deve ser usada em produção. Restrinja
+os endereços autorizados e rotacione credenciais comprometidas antes de expor
+o banco. A configuração ainda precisa ser aplicada após revisão do plano.
 
 O RDS atual está na VPC antiga. A próxima aplicação do Terraform substituirá o
 banco e removerá os recursos de rede exclusivos do MS; os dados não são
@@ -22,22 +85,51 @@ o conteúdo do banco antigo pode ser descartado. Após a substituição, atualiz
 GitHub Actions Secret `DB_HOST` com o endpoint novo e confirme que
 `DB_USERNAME`/`DB_PASSWORD` correspondem ao RDS criado antes do deploy.
 
+O workflow atual executa `terraform apply` automaticamente em pushes para
+`main` e execuções manuais nessa branch. Não o dispare antes de reconciliar o
+state e revisar e autorizar o plano, incluindo os efeitos no RDS.
+
 ## Deploy no EKS
 
 O workflow `.github/workflows/ci-cd.yml` usa GitHub Actions Secrets para o
 deploy. Configure `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e
 `AWS_SESSION_TOKEN` para autenticar o runner no EKS; esses valores são usados
 somente pelo runner e não devem ser incluídos nos Secrets dos Pods. Para a
-aplicação, o workflow usa `DB_HOST`, `SQS_SERVICE_ORDERS_CREATED_URL`,
-`SQS_SERVICE_ORDER_STATUS_CHANGED_URL`, `APP_KEY`, `DB_USERNAME`,
-`DB_PASSWORD` e `JWT_SECRET`. `GHCR_USERNAME` e `GHCR_TOKEN` são necessários
+API, o workflow usa `DB_HOST`, `APP_KEY`, `DB_USERNAME`, `DB_PASSWORD` e
+`JWT_SECRET`. As Lambdas recebem a configuração do banco e da fila pelo Terraform. `GHCR_USERNAME` e `GHCR_TOKEN` são necessários
 para pull da imagem privada.
 
-Os Pods precisam de uma identidade IAM para acessar SQS. O ambiente Learner Lab
-usa temporariamente a role dos nodes do EKS, que não isola as permissões por
-namespace ou ServiceAccount; substitua esse acesso por IRSA ou EKS Pod Identity
-com uma role dedicada antes de produção. Mantenha credenciais do runner nos
-GitHub Actions Secrets e não as injete nos Secrets dos Pods.
+Cada Lambda tem sua própria role IAM com acesso mínimo: o consumer só recebe da
+fila de criação, o status consumer só recebe da fila de status e o publisher só
+envia à fila de execução. Os workers da aplicação também viraram Lambdas
+(`tech-challenge-kubernetes/app-lambda`). Com isso, nenhum workload do EKS
+usa Pod Identity: `pod_identity_workloads` está vazio e o Terraform só cria o
+agente quando `enable_pod_identity = true`. O manifesto dessa conta fica no repositório Kubernetes, junto
+ao deployment do consumer. A configuração vem desativada por padrão
+(`enable_pod_identity = false`) no Terraform; o CI passa explicitamente
+`enable_pod_identity = true` no plano para preservar as associações. Essa
+configuração local do workflow só terá efeito após ser publicada.
+
+Antes de habilitar, um administrador deve conceder ao operador as permissões
+para criar roles/policies e fazer `iam:PassRole`. O agente também exige
+`eks-auth:AssumeRoleForPodIdentity` na role dos nodes e acesso à API EKS Auth.
+Na verificação do laboratório houve negação explícita dessa ação para a role
+dos nodes; uma permissão adicional não supera uma negação explícita. Resolva
+esse bloqueio antes do apply. Verifique também se o addon já existe: caso seja
+gerenciado fora deste Terraform, concilie sua propriedade antes de habilitar.
+
+Em execuções manuais do Terraform, mantenha `enable_pod_identity = true` para
+evitar a remoção das associações. Revise o plano completo e obtenha autorização
+antes de aplicar; o CI continua executando apply automaticamente em `main`.
+A política temporária existente
+das filas para a role dos nodes permanece até uma remoção planejada e
+autorizada; enquanto estiver ativa, não há isolamento completo dos demais
+pods. Após a associação estar pronta, aplique as ServiceAccounts e reinicie
+os deployments para que os pods recebam a identidade; valide o consumo e o
+envio antes de habilitar produtores. Nunca injete credenciais do runner nos
+Secrets dos pods. Confirme que não há credenciais AWS estáticas no ambiente do
+consumer que tenham precedência sobre as credenciais do Pod Identity. A
+anotação `eks.amazonaws.com/role-arn` é usada por IRSA, não por Pod Identity.
 
 Os três workflows de build/deploy aceitam execução manual (`workflow_dispatch`)
 na branch selecionada:
