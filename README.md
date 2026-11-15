@@ -1,16 +1,40 @@
-# Services MS
+# tech-challenge-services-ms
 
-Microsserviço de execução dos serviços da O.S. (início e fim de cada serviço). O status da O.S. pertence à aplicação; o MS mantém uma cópia somente leitura.
+Microsserviço de **execução dos serviços da O.S.** do POS Tech Challenge: registra o início e o fim de cada serviço
+e avisa a aplicação quando a execução da O.S. termina. O status da O.S. pertence à aplicação; o MS mantém uma cópia somente leitura.
 
-- Entrada: fila SQS FIFO `service-orders-created` (Lambda `services-ms-service-orders-consumer`), com a criação da O.S.
-- Entrada: fila SQS FIFO `service-order-status-changed` (Lambda `services-ms-status-consumer`), com cada `ServiceOrderStatusChanged` publicado pela aplicação.
-- Saída: fila SQS FIFO `service-order-execution`, via outbox (Lambda `services-ms-outbox-publisher`), com `ServiceOrderExecutionStarted` e `ServiceOrderExecutionFinished`.
-- API (JWT HS256, mesmo `JWT_SECRET` do monólito): `GET /service-orders/{id}`, `POST /service-orders/{id}/services/{sid}/start|finish`. Não há rota para alterar o status.
+Laravel 12 · PHP 8.4 · SQS FIFO + outbox · Lambdas via [Bref](https://bref.sh) · API no EKS · RDS MySQL · New Relic (OpenTelemetry).
+
+![Arquitetura do Services MS](docs/architecture.png)
+
+---
+
+## Arquitetura
+
+```
+tech-challenge-application (dono da O.S. e do status)
+   │ outbox
+   ├──> SQS service-orders-created.fifo ───────> λ services-ms-service-orders-consumer ─┐
+   │      ServiceOrderCreated (+ legado ApprovalChanged)   importa O.S. + serviços       │
+   │                                                                                    ├──> RDS MySQL services_ms
+   └──> SQS service-order-status-changed.fifo ─> λ services-ms-status-consumer ─────────┤    service_orders, service_order_services,
+          ServiceOrderStatusChanged (sequence)    aplica se sequence > status_sequence   │    processed_messages, outbox
+                                                                                        │
+Mecânico ──JWT──> LB :8081 ──> API web (EKS, services-ms-web) ──────────────────────────┤
+                               start/finish → grava ExecutionStarted/Finished na outbox │
+                                                                                        │
+EventBridge rate(1 min) ──> λ services-ms-outbox-publisher ──(lê outbox)────────────────┘
+                               └──> SQS service-order-execution.fifo ──> aplicação (finalizada)
+```
+
+- **Entrada**: `service-orders-created` (criação da O.S.) e `service-order-status-changed` (cada `ServiceOrderStatusChanged` da aplicação).
+- **Saída**: `service-order-execution`, via outbox, com `ServiceOrderExecutionStarted` e `ServiceOrderExecutionFinished`.
+- **API** (JWT HS256, mesmo `JWT_SECRET` do monólito): `GET /service-orders/{id}`, `POST /service-orders/{id}/services/{sid}/start|finish`. Não há rota para alterar o status.
 - O workflow deste repositório publica a imagem e implanta a API pelos manifests em `k8s/`. Os consumers e o publisher são Lambdas criadas pelo Terraform em `infra/`.
 
 ### Lambdas (consumers e publisher)
 
-Os workers rodam em Lambda com PHP 8.4 via [Bref](https://bref.sh) (`bref/laravel-bridge`), reaproveitando os casos de uso de `app/Application`. Os handlers ficam em `app/Lambda`:
+Os workers rodam em Lambda com PHP 8.4 via Bref (`bref/laravel-bridge`), reaproveitando os casos de uso de `app/Application`. Os handlers ficam em `app/Lambda`:
 
 | Lambda | Handler | Gatilho |
 |---|---|---|
@@ -34,16 +58,21 @@ Os workers rodam em Lambda com PHP 8.4 via [Bref](https://bref.sh) (`bref/larave
 
 O.S. sem `status_sequence` (importadas antes desta mudança) recusam início/fim com 422 até receberem um evento de status. Para isso, rode `services-ms:sync-service-order-status` na aplicação (ver "Corte" abaixo). Os eventos legados `ServiceOrderApprovalChanged` ainda são aceitos na fila de criação, mas só alteram O.S. que ainda não têm `status_sequence`.
 
-### Corte (uma única vez)
+Status (enum `ServiceOrderStatus`): `recebida` → `em_diagnostico` ⇄ `aguardando_aprovacao` → `em_execucao` → `finalizada` → `entregue`.
 
-A fila `service-order-status-changed` inverteu de sentido: antes ia do MS para a aplicação e agora vai da aplicação para o MS. Ordem recomendada:
+---
 
-1. Aplique o Terraform em `infra/` para criar `service-order-execution.fifo` e sua DLQ. Cadastre o secret `SQS_SERVICE_ORDER_EXECUTION_URL` neste repositório.
-2. Com a aplicação ainda na versão antiga, pare o outbox antigo do MS (`kubectl scale deployment services-ms-outbox -n services-ms --replicas=0`). Espere a fila `service-order-status-changed` esvaziar, ou seja, o consumidor antigo da aplicação processar o que restou.
-3. Implante o MS. O workflow remove os workers antigos do EKS (`services-ms-consumer`, `services-ms-outbox`, `services-ms-status-consumer`) antes do `terraform apply`, que cria as Lambdas. A migration `discard_legacy_status_outbox_events` marca como publicados os `ServiceOrderStatusChanged` antigos ainda pendentes na outbox do MS. Sem isso, o grupo da O.S. ficaria bloqueado no publisher. Atenção: o workflow roda as migrations no job de deploy, depois do `terraform apply`. Até elas terminarem, as Lambdas podem falhar por falta da coluna `status_sequence`, e as mensagens com 3 falhas vão para a DLQ. No corte, rode as migrations antes do apply ou faça o redrive da DLQ depois.
-4. Implante a aplicação pelo repositório Kubernetes. O workflow remove `postech-status-consumer` e os workers antigos da aplicação antes de aplicar a nova imagem. No mesmo workflow, depois das migrations, o job `lambdas` cria as Lambdas `postech-outbox-publisher` e `postech-execution-consumer` (`tech-challenge-kubernetes/app-lambda`). Confirme que `SERVICES_MS_ENABLED=true`, senão a aplicação não publica eventos.
-5. Na aplicação, rode `php artisan services-ms:backfill-service-orders` para O.S. ainda não importadas e depois `php artisan services-ms:sync-service-order-status`.
-6. Verifique as DLQs. Mensagens antigas no formato anterior, sem `sequence`, que chegarem ao novo consumidor do MS vão para a DLQ após 3 tentativas e podem ser descartadas.
+## Pré-requisitos
+
+| Ferramenta | Versão | Uso |
+|---|---|---|
+| Docker + Compose | recente | ambiente local (PHP 8.4 + MySQL 8) |
+| PHP + Composer | 8.4 / 2.x | rodar testes fora do Docker e montar o pacote das Lambdas |
+| Terraform | ≥ 1.10 (CI usa 1.10.5) | `infra/` |
+| AWS CLI v2 + kubectl | recente | operar Lambdas, SQS e o cluster `main` |
+| GitHub CLI (`gh`) | opcional | disparar workflow e configurar secrets |
+
+---
 
 ## Desenvolvimento local com Docker
 
@@ -68,6 +97,43 @@ MySQL; alterá-la no `.env` não atualiza um banco já inicializado. O Compose
 inicia somente a API; os consumers e o publisher existem apenas como Lambdas
 (`app/Lambda`) e são cobertos por `tests/Feature/LambdaHandlersTest.php`.
 
+> O serviço `localstack` está comentado no `docker-compose.yml`. Para usar filas locais, descomente-o;
+> `docker/localstack/init-sqs.sh` cria as filas FIFO.
+
+Atalhos do `Makefile`: `make up`, `make down`, `make logs`, `make test`, `make lint` (Pint), `make build`.
+
+### Testes
+
+```bash
+docker compose exec php php artisan test   # ou: make test
+php artisan test                            # fora do Docker (exige PHP 8.4)
+```
+
+O CI roda os mesmos testes (PHPUnit com o `.env.example`) e `terraform fmt -check` + `terraform validate`.
+
+---
+
+## API
+
+Todas as rotas exigem `Authorization: Bearer <JWT>` (HS256, claim `sub` = id do usuário). Sem token ou com assinatura inválida → `401`.
+
+| Método | Rota | Resposta |
+|---|---|---|
+| `GET` | `/service-orders/{id}` | O.S. + serviços |
+| `POST` | `/service-orders/{id}/services/{serviceId}/start` | O.S. atualizada; `422` se a O.S. não está em `em_execucao`, o serviço já foi iniciado ou o status ainda não foi sincronizado |
+| `POST` | `/service-orders/{id}/services/{serviceId}/finish` | O.S. atualizada; `422` se o serviço não foi iniciado ou já foi finalizado |
+| `GET` | `/up` | health check (probes do Kubernetes) |
+
+```bash
+# Endereço do LoadBalancer no EKS (porta 8081)
+HOST=$(kubectl get svc services-ms-web -n services-ms -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+curl -s "http://$HOST:8081/service-orders/<id>" -H "Authorization: Bearer $TOKEN"
+```
+
+O token é emitido pela aplicação (mesmo `JWT_SECRET`). A collection Bruno está em [`bruno/`](bruno/README.md).
+
+---
+
 ## Infraestrutura
 
 O Terraform em `infra/` consulta a VPC `main` e as subnets `sub_a`/`sub_b` do
@@ -89,26 +155,58 @@ O workflow atual executa `terraform apply` automaticamente em pushes para
 `main` e execuções manuais nessa branch. Não o dispare antes de reconciliar o
 state e revisar e autorizar o plano, incluindo os efeitos no RDS.
 
-## Deploy no EKS
+### Terraform local
 
-O workflow `.github/workflows/ci-cd.yml` usa GitHub Actions Secrets para o
-deploy. Configure `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e
-`AWS_SESSION_TOKEN` para autenticar o runner no EKS; esses valores são usados
-somente pelo runner e não devem ser incluídos nos Secrets dos Pods. Para a
-API, o workflow usa `DB_HOST`, `APP_KEY`, `DB_USERNAME`, `DB_PASSWORD` e
-`JWT_SECRET`. As Lambdas recebem a configuração do banco e da fila pelo Terraform. `GHCR_USERNAME` e `GHCR_TOKEN` são necessários
-para pull da imagem privada.
+```bash
+scripts/build-lambda.sh                 # obrigatório: o Terraform compacta build/lambda
+cd infra
+terraform init -reconfigure             # backend S3 techchallenge-tfstate-477478162709-v2
+terraform plan -var=enable_pod_identity=true -out=tfplan
+terraform apply tfplan                  # só após revisar o plano
+terraform output                        # URLs das filas, endpoint do RDS, nomes das Lambdas
+```
+
+Variáveis sem default: `db_password`, `jwt_secret` (use `TF_VAR_*`; arquivos `*tfvars*` estão no `.gitignore`).
+Opcionais: `new_relic_license_key` (liga as métricas das Lambdas), `bref_php_layer_version`, `otel_collector_layer_version`.
+
+---
+
+## Deploy no EKS (CI/CD)
+
+`.github/workflows/ci-cd.yml`:
+
+| Evento | Jobs |
+|---|---|
+| Pull request para `main` | `test` (PHPUnit) + `terraform` (fmt/validate) |
+| Push em `main` / `workflow_dispatch` em `main` | + `terraform_apply` (build das Lambdas, plan, remove workers antigos do EKS, apply) → `build` (imagem GHCR `:<sha>` e `:latest`) → `deploy` |
+
+O job `deploy` aplica namespace, ConfigMap e Secrets, sobe o `otel-collector`, roda o Job de migrations
+(com diagnóstico sem expor Secrets em caso de falha) e faz o rollout de `services-ms-web` + HPA.
+
+### Secrets do repositório
+
+| Secret | Uso |
+|---|---|
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | runner (Terraform e kubectl). Nunca vão para os Secrets dos Pods |
+| `DB_HOST` | ConfigMap da API (endpoint do RDS) |
+| `DB_USERNAME`, `DB_PASSWORD` | Secret `services-ms-secret`; `DB_PASSWORD` também é `TF_VAR_db_password` |
+| `APP_KEY` | Secret `services-ms-secret` |
+| `JWT_SECRET` | Secret `services-ms-secret` e `TF_VAR_jwt_secret` — o mesmo da aplicação |
+| `GHCR_USERNAME`, `GHCR_TOKEN` | `ghcr-secret` para pull da imagem privada |
+| `NEW_RELIC_LICENSE_KEY` | `TF_VAR_new_relic_license_key` (Lambdas) e `otel-collector-secret` (EKS) |
+
+As Lambdas recebem a configuração do banco e da fila pelo Terraform, não pelos Secrets do Kubernetes.
+
+### Identidade IAM
 
 Cada Lambda tem sua própria role IAM com acesso mínimo: o consumer só recebe da
 fila de criação, o status consumer só recebe da fila de status e o publisher só
 envia à fila de execução. Os workers da aplicação também viraram Lambdas
 (`tech-challenge-kubernetes/app-lambda`). Com isso, nenhum workload do EKS
 usa Pod Identity: `pod_identity_workloads` está vazio e o Terraform só cria o
-agente quando `enable_pod_identity = true`. O manifesto dessa conta fica no repositório Kubernetes, junto
-ao deployment do consumer. A configuração vem desativada por padrão
+agente quando `enable_pod_identity = true`. A configuração vem desativada por padrão
 (`enable_pod_identity = false`) no Terraform; o CI passa explicitamente
-`enable_pod_identity = true` no plano para preservar as associações. Essa
-configuração local do workflow só terá efeito após ser publicada.
+`enable_pod_identity = true` no plano para preservar as associações.
 
 Antes de habilitar, um administrador deve conceder ao operador as permissões
 para criar roles/policies e fazer `iam:PassRole`. O agente também exige
@@ -119,17 +217,12 @@ esse bloqueio antes do apply. Verifique também se o addon já existe: caso seja
 gerenciado fora deste Terraform, concilie sua propriedade antes de habilitar.
 
 Em execuções manuais do Terraform, mantenha `enable_pod_identity = true` para
-evitar a remoção das associações. Revise o plano completo e obtenha autorização
-antes de aplicar; o CI continua executando apply automaticamente em `main`.
-A política temporária existente
+evitar a remoção das associações. A política temporária existente
 das filas para a role dos nodes permanece até uma remoção planejada e
 autorizada; enquanto estiver ativa, não há isolamento completo dos demais
-pods. Após a associação estar pronta, aplique as ServiceAccounts e reinicie
-os deployments para que os pods recebam a identidade; valide o consumo e o
-envio antes de habilitar produtores. Nunca injete credenciais do runner nos
-Secrets dos pods. Confirme que não há credenciais AWS estáticas no ambiente do
-consumer que tenham precedência sobre as credenciais do Pod Identity. A
-anotação `eks.amazonaws.com/role-arn` é usada por IRSA, não por Pod Identity.
+pods. Nunca injete credenciais do runner nos Secrets dos pods.
+
+### Execução manual
 
 Os três workflows de build/deploy aceitam execução manual (`workflow_dispatch`)
 na branch selecionada:
@@ -146,31 +239,46 @@ na branch selecionada:
 Os deploys manuais do Services MS e Kubernetes alteram o cluster EKS
 compartilhado; revise a branch e a tag antes de iniciá-los.
 
-## Observabilidade (OpenTelemetry → New Relic)
+```bash
+gh workflow run ci-cd.yml --ref main
+gh run watch
+```
 
-O MS não usa o agente PHP do New Relic. Ele exporta métricas OTLP/HTTP
-(temporalidade delta) para um OpenTelemetry Collector, que repassa ao New Relic:
+---
+
+## Integração com o tech-challenge-application
+
+A aplicação só publica eventos para o MS com `SERVICES_MS_ENABLED=true` (`config/services_ms.php` na aplicação).
+Comandos da aplicação usados na integração: `services-ms:backfill-service-orders` (importa O.S. existentes) e
+`services-ms:sync-service-order-status` (envia o status atual de cada O.S.).
+
+### Corte (uma única vez)
+
+A fila `service-order-status-changed` inverteu de sentido: antes ia do MS para a aplicação e agora vai da aplicação para o MS. Ordem recomendada:
+
+1. Aplique o Terraform em `infra/` para criar `service-order-execution.fifo` e sua DLQ. Cadastre o secret `SQS_SERVICE_ORDER_EXECUTION_URL` neste repositório.
+2. Com a aplicação ainda na versão antiga, pare o outbox antigo do MS (`kubectl scale deployment services-ms-outbox -n services-ms --replicas=0`). Espere a fila `service-order-status-changed` esvaziar, ou seja, o consumidor antigo da aplicação processar o que restou.
+3. Implante o MS. O workflow remove os workers antigos do EKS (`services-ms-consumer`, `services-ms-outbox`, `services-ms-status-consumer`) antes do `terraform apply`, que cria as Lambdas. A migration `discard_legacy_status_outbox_events` marca como publicados os `ServiceOrderStatusChanged` antigos ainda pendentes na outbox do MS. Sem isso, o grupo da O.S. ficaria bloqueado no publisher. Atenção: o workflow roda as migrations no job de deploy, depois do `terraform apply`. Até elas terminarem, as Lambdas podem falhar por falta da coluna `status_sequence`, e as mensagens com 3 falhas vão para a DLQ. No corte, rode as migrations antes do apply ou faça o redrive da DLQ depois.
+4. Implante a aplicação pelo repositório Kubernetes. O workflow remove `postech-status-consumer` e os workers antigos da aplicação antes de aplicar a nova imagem. No mesmo workflow, depois das migrations, o job `lambdas` cria as Lambdas `postech-outbox-publisher` e `postech-execution-consumer` (`tech-challenge-kubernetes/app-lambda`). Confirme que `SERVICES_MS_ENABLED=true`, senão a aplicação não publica eventos.
+5. Na aplicação, rode `php artisan services-ms:backfill-service-orders` para O.S. ainda não importadas e depois `php artisan services-ms:sync-service-order-status`.
+6. Verifique as DLQs. Mensagens antigas no formato anterior, sem `sequence`, que chegarem ao novo consumidor do MS vão para a DLQ após 3 tentativas e podem ser descartadas.
+
+---
+
+## Monitoramento
+
+### New Relic (OpenTelemetry)
+
+O MS não usa o agente PHP do New Relic. Ele exporta métricas OTLP (temporalidade delta) para um OpenTelemetry Collector, que repassa ao New Relic:
 
 ```
 API web (EKS) ──OTLP──> otel-collector (Deployment, k8s/03-observability) ──┐
 Lambdas ──OTLP localhost──> layer opentelemetry-collector (extension) ──────┴──> otlp.nr-data.net
 ```
 
-- **EKS**: `k8s/03-observability/otel-collector.yaml` (ConfigMap, Deployment e
-  Service `otel-collector:4318`). O workflow cria o Secret `otel-collector-secret`
-  e aplica o collector antes do rollout da API.
-- **Lambdas**: as funções rodam fora da VPC e não alcançam o cluster, então cada
-  uma carrega a layer `opentelemetry-collector-amd64-<versão>` (variável
-  `otel_collector_layer_version`) com a config `otel/lambda-collector.yaml`
-  (copiada para `/var/task/collector.yaml` pelo `scripts/build-lambda.sh`). Sem
-  `new_relic_license_key`, o Terraform não adiciona a layer e as métricas ficam
-  desligadas.
-- **PHP**: `config/telemetry.php`. Só exporta com `OTEL_METRICS_EXPORTER=otlp`
-  (padrão `none`, usado em dev e nos testes). A API exporta no fim de cada
-  request; as Lambdas, no fim de cada invocação.
-
-Secret do repositório necessário: `NEW_RELIC_LICENSE_KEY` (ingest license key,
-a mesma do `nri-bundle` no repositório Kubernetes).
+- Secret necessário: `NEW_RELIC_LICENSE_KEY` (a mesma do `nri-bundle` no repositório Kubernetes). Sem ela, as Lambdas sobem sem a layer do collector.
+- Métricas de negócio (`service_order.*`), mensageria (`messaging.*`, `outbox.publish.lag`) e HTTP (`http.server.request.duration`), todas com `service.name = 'services-ms'`. Sem IDs de O.S./cliente/veículo nos atributos.
+- Conta New Relic `8497993`. Só exporta com `OTEL_METRICS_EXPORTER=otlp` (padrão `none`, usado em dev e nos testes).
 
 | Métrica | Tipo | Atributos | Origem |
 |---|---|---|---|
@@ -185,73 +293,91 @@ a mesma do `nri-bundle` no repositório Kubernetes).
 | `outbox.publish.lag` | histogram (s) | idem | gravação na outbox → envio ao SQS |
 | `http.server.request.duration` | histogram (s) | `http.request.method`, `http.route`, `http.response.status_code` | rotas da API (sem `/up`) |
 
-Os atributos não levam IDs de O.S./cliente/veículo (cardinalidade); esses ficam
-nos logs. Exemplos de NRQL:
-
 ```sql
 FROM Metric SELECT sum(service_order.status.transitions) WHERE service.name = 'services-ms' FACET service_order.status TIMESERIES
-FROM Metric SELECT percentile(service_order.service.duration, 50, 95) WHERE service.name = 'services-ms' TIMESERIES
 FROM Metric SELECT count(messaging.process.duration) WHERE service.name = 'services-ms' FACET outcome, messaging.destination.name
+FROM Metric SELECT percentile(outbox.publish.lag, 50, 95) WHERE service.name = 'services-ms' TIMESERIES
+-- Validar se as métricas chegam
+FROM Metric SELECT count(*) WHERE service.name = 'services-ms' SINCE 30 minutes ago FACET metricName
+```
+
+Sem métricas da API: `kubectl logs deploy/otel-collector -n services-ms` e o Secret `otel-collector-secret`.
+Sem métricas das Lambdas: confira a layer do collector e `OTEL_METRICS_EXPORTER=otlp` em
+`aws lambda get-function-configuration --function-name services-ms-status-consumer`.
+
+### Logs das Lambdas
+
+```bash
+# nomes: service-orders-consumer, status-consumer, outbox-publisher
+aws logs tail /aws/lambda/services-ms-status-consumer --follow
+aws logs tail /aws/lambda/services-ms-service-orders-consumer --since 1h --filter-pattern "Invalid SQS message"
+```
+
+### Logs da API
+
+```bash
+kubectl logs deploy/services-ms-web -n services-ms --tail=100 -f
+kubectl get pods,hpa -n services-ms
+```
+
+### Mensagens na DLQ
+
+```bash
+cd infra && terraform output sqs_dlq_urls
+aws sqs get-queue-attributes --queue-url <dlq_url> --attribute-names ApproximateNumberOfMessages
+aws sqs receive-message --queue-url <dlq_url> --max-number-of-messages 10
+# Reprocessar (redrive de volta para a fila de origem)
+aws sqs start-message-move-task --source-arn <dlq_arn>
 ```
 
 ---
 
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+## Troubleshooting
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+| Sintoma | Causa provável | O que fazer |
+|---|---|---|
+| `start`/`finish` → 422 "status has not been synchronized" | O.S. sem `status_sequence` | Na aplicação: `php artisan services-ms:sync-service-order-status` |
+| `start` → 422 "Cannot start a service while the order is …" | O.S. ainda não aprovada | Aprovar o orçamento na aplicação; o status chega pela fila de status |
+| 401 em todas as rotas | `JWT_SECRET` diferente do monólito ou token sem `sub` | Conferir o secret `JWT_SECRET` nos dois repositórios |
+| Mensagens indo para a DLQ logo após o deploy | Migrations ainda não rodaram (coluna `status_sequence`) | Esperar o Job `services-ms-migrate` e fazer redrive da DLQ |
+| Status nunca chega ao MS | `SERVICES_MS_ENABLED=false` na aplicação | Ligar a flag e rodar o sync |
+| Outbox não publica | `SQS_SERVICE_ORDER_EXECUTION_URL` ausente na Lambda ou outro publisher com o lock | `aws logs tail /aws/lambda/services-ms-outbox-publisher`; consultar `outbox` com `published_at IS NULL` |
+| Job de migração falha no deploy | credenciais/host do RDS | O passo "Run migrations" imprime o diagnóstico (SQLSTATE, DNS, timeout); conferir `DB_HOST`/`DB_USERNAME`/`DB_PASSWORD` |
+| `terraform plan` falha em `archive_file` | `build/lambda` não existe | Rodar `scripts/build-lambda.sh` antes |
+| Nenhuma métrica no New Relic | `NEW_RELIC_LICENSE_KEY` ausente ou collector parado | Ver "Monitoramento" acima |
 
-## About Laravel
+---
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Estrutura do repositório
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
-
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
-
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-## Laravel Sponsors
-
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
-
-### Premium Partners
-
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
-
-## Contributing
-
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Code of Conduct
-
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+```
+tech-challenge-services-ms/
+├── app/
+│   ├── Application/
+│   │   ├── Execution/ServiceOrderExecution.php      # start/finish + eventos na outbox
+│   │   ├── Outbox/OutboxPublisher.php               # outbox → service-order-execution.fifo (GET_LOCK)
+│   │   ├── ServiceOrder/Process*.php                # consumers: Created, StatusChanged, ApprovalChanged (legado)
+│   │   └── Telemetry/Metrics.php                    # métricas OpenTelemetry
+│   ├── Domain/ServiceOrder/                         # ServiceOrder, ServiceOrderService, ServiceOrderStatus
+│   ├── Http/Controllers/ServiceOrderExecutionController.php
+│   ├── Http/Middleware/                             # VerifyJwt, RecordHttpMetrics
+│   ├── Infrastructure/                              # repositórios Eloquent, MeterProviderFactory
+│   └── Lambda/                                      # handlers Bref (FifoSqsHandler + 3 Lambdas)
+├── database/migrations/                             # service_orders, services, processed_messages, outbox
+├── routes/api.php                                   # rotas JWT (sem prefixo /api)
+├── config/telemetry.php                             # OTLP
+├── infra/                                           # Terraform: SQS, RDS, Lambdas, Pod Identity
+│   └── tests/pod_identity.tftest.hcl
+├── k8s/
+│   ├── 00-namespace/  01-config/                    # namespace, ConfigMap (placeholders preenchidos pelo CI)
+│   ├── 02-app/                                      # web, HPA + LB :8081, Job de migrations
+│   └── 03-observability/otel-collector.yaml
+├── otel/lambda-collector.yaml                       # config do collector das Lambdas
+├── scripts/build-lambda.sh                          # monta build/lambda
+├── bruno/                                           # collection da API
+├── docs/architecture.png                         # diagrama da arquitetura
+├── tests/                                           # PHPUnit (Feature + Unit)
+├── CLAUDE.md                                        # contexto para o Claude Code
+├── .claude/skills/skills.md                         # playbooks do Claude Code
+└── .github/workflows/ci-cd.yml                      # test → terraform → build → deploy
+```
