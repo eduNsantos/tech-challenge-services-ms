@@ -1,6 +1,6 @@
 # OpenTelemetry Collector do Services MS (API web no EKS).
 #
-# O pod web exporta métricas OTLP/HTTP para este collector, que repassa ao New
+# O pod web exporta métricas e logs da jornada da O.S. (OTLP/HTTP) para este collector, que repassa ao New
 # Relic. A license key vem do Secret otel-collector-secret, criado pelo workflow
 # de deploy a partir do secret NEW_RELIC_LICENSE_KEY do repositório.
 # As Lambdas não alcançam o cluster: usam a layer do collector (infra/lambda.tf).
@@ -50,6 +50,10 @@ data:
       extensions: [health_check]
       pipelines:
         metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlphttp/newrelic]
+        logs:
           receivers: [otlp]
           processors: [memory_limiter, resource, batch]
           exporters: [otlphttp/newrelic]

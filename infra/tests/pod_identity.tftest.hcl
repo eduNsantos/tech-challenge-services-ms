@@ -156,7 +156,9 @@ run "lambda_metrics_disabled_without_license_key" {
   assert {
     condition = alltrue([
       for fn in aws_lambda_function.worker :
-      length(fn.layers) == 1 && fn.environment[0].variables["OTEL_METRICS_EXPORTER"] == "none"
+      length(fn.layers) == 1 &&
+      fn.environment[0].variables["OTEL_METRICS_EXPORTER"] == "none" &&
+      fn.environment[0].variables["OTEL_LOGS_EXPORTER"] == "none"
     ])
     error_message = "Sem license key do New Relic, as Lambdas não devem carregar a layer do collector."
   }
@@ -175,6 +177,7 @@ run "lambda_metrics_use_collector_layer" {
       length(fn.layers) == 2 &&
       endswith(fn.layers[1], ":layer:opentelemetry-collector-amd64-${var.otel_collector_layer_version}:1") &&
       fn.environment[0].variables["OTEL_METRICS_EXPORTER"] == "otlp" &&
+      fn.environment[0].variables["OTEL_LOGS_EXPORTER"] == "otlp" &&
       fn.environment[0].variables["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4318" &&
       fn.environment[0].variables["OPENTELEMETRY_COLLECTOR_CONFIG_URI"] == "/var/task/collector.yaml"
     ])

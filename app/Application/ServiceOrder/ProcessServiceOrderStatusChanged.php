@@ -3,6 +3,7 @@
 namespace App\Application\ServiceOrder;
 
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use App\Domain\ServiceOrder\ServiceOrderStatus;
 use App\Models\ServiceOrder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -14,7 +15,10 @@ class ProcessServiceOrderStatusChanged
 {
     public const TYPE = 'ServiceOrderStatusChanged';
 
-    public function __construct(private readonly Metrics $metrics) {}
+    public function __construct(
+        private readonly Metrics $metrics,
+        private readonly ServiceOrderJourney $journey,
+    ) {}
 
     public function handle(array $payload): bool
     {
@@ -63,6 +67,15 @@ class ProcessServiceOrderStatusChanged
 
         if ($changed && $previousStatus !== $payload['status']) {
             $this->metrics->statusChanged($previousStatus, $payload['status'], self::TYPE);
+        }
+
+        if ($changed) {
+            $this->journey->record('status_synchronized', $payload['service_order_id'], [
+                'previous_status' => $previousStatus,
+                'status' => $payload['status'],
+                'sequence' => $payload['sequence'],
+                'event_id' => $payload['event_id'],
+            ]);
         }
 
         return $changed;

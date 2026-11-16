@@ -13,7 +13,10 @@ return [
     // "otlp" liga a exportação; qualquer outro valor (padrão "none") usa um provider no-op.
     'exporter' => env('OTEL_METRICS_EXPORTER', 'none'),
 
-    // Base do endpoint OTLP/HTTP do collector; o SDK acrescenta /v1/metrics.
+    // Logs da jornada da O.S. (ServiceOrderJourney), com o id da O.S. Mesma regra: só "otlp" exporta.
+    'logs_exporter' => env('OTEL_LOGS_EXPORTER', 'none'),
+
+    // Base do endpoint OTLP/HTTP do collector; o SDK acrescenta /v1/metrics e /v1/logs.
     'endpoint' => env('OTEL_EXPORTER_OTLP_ENDPOINT', 'http://localhost:4318'),
 
     // Tempo máximo por exportação. A exportação roda no fim da request/invocação.

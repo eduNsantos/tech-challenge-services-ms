@@ -27,3 +27,8 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [otlphttp/newrelic]
+    # Jornada da O.S. (ServiceOrderJourney): vira `Log` no New Relic, com service_order_id.
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/newrelic]

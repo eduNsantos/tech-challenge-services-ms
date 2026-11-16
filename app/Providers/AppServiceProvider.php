@@ -3,13 +3,16 @@
 namespace App\Providers;
 
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use App\Domain\ServiceOrder\ServiceOrderContract;
 use App\Domain\ServiceOrder\ServiceOrderServiceContract;
 use App\Infrastructure\Repositories\EloquentServiceOrderRepository;
 use App\Infrastructure\Repositories\EloquentServiceOrderServiceRepository;
+use App\Infrastructure\Telemetry\LoggerProviderFactory;
 use App\Infrastructure\Telemetry\MeterProviderFactory;
 use Aws\Sqs\SqsClient;
 use Illuminate\Support\ServiceProvider;
+use OpenTelemetry\SDK\Logs\LoggerProviderInterface;
 use OpenTelemetry\SDK\Metrics\MeterProviderInterface;
 
 class AppServiceProvider extends ServiceProvider
@@ -37,6 +40,12 @@ class AppServiceProvider extends ServiceProvider
             fn (): MeterProviderInterface => MeterProviderFactory::create(config('telemetry')),
         );
         $this->app->singleton(Metrics::class);
+
+        $this->app->singleton(
+            LoggerProviderInterface::class,
+            fn (): LoggerProviderInterface => LoggerProviderFactory::create(config('telemetry')),
+        );
+        $this->app->singleton(ServiceOrderJourney::class);
     }
 
     /**
@@ -44,11 +53,15 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // API web: exporta as métricas da request ao terminar. Nas Lambdas o
+        // API web: exporta métricas e logs da jornada ao terminar a request. Nas Lambdas o
         // processo é reaproveitado entre invocações, então os handlers chamam flush().
         $this->app->terminating(function (): void {
             if ($this->app->resolved(Metrics::class)) {
                 $this->app->make(Metrics::class)->flush();
+            }
+
+            if ($this->app->resolved(ServiceOrderJourney::class)) {
+                $this->app->make(ServiceOrderJourney::class)->flush();
             }
         });
     }

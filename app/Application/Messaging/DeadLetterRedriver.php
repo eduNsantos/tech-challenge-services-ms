@@ -3,6 +3,7 @@
 namespace App\Application\Messaging;
 
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use Aws\Sqs\SqsClient;
 use Closure;
 use Illuminate\Support\Facades\Log;
@@ -26,6 +27,7 @@ class DeadLetterRedriver
     public function __construct(
         private readonly SqsClient $client,
         private readonly Metrics $metrics,
+        private readonly ServiceOrderJourney $journey,
     ) {}
 
     /**
@@ -74,6 +76,10 @@ class DeadLetterRedriver
                 'service_order_id' => $groupId,
             ]);
 
+            if ($groupId !== null) {
+                $this->journey->record('dead_letter_exhausted', $groupId, $this->journeyAttributes($message, $queue, $attempt), warning: true);
+            }
+
             return 'exhausted';
         }
 
@@ -99,8 +105,26 @@ class DeadLetterRedriver
         }
 
         Log::warning('Dead-letter message sent back for a new attempt.', $context + ['service_order_id' => $groupId]);
+        $this->journey->record('dead_letter_redriven', $groupId, $this->journeyAttributes($message, $queue, $attempt + 1), warning: true);
 
         return 'redriven';
+    }
+
+    /**
+     * Atributos do passo da jornada; o tipo do evento vem do corpo, se for JSON.
+     *
+     * @return array<string, scalar|null>
+     */
+    private function journeyAttributes(array $message, string $queue, int $attempt): array
+    {
+        $body = json_decode($message['Body'] ?? '', true);
+
+        return [
+            'queue' => $queue,
+            'redrive_attempt' => $attempt,
+            'event_type' => is_array($body) && is_string($body['type'] ?? null) ? $body['type'] : null,
+            'event_id' => is_array($body) && is_string($body['event_id'] ?? null) ? $body['event_id'] : null,
+        ];
     }
 
     /**

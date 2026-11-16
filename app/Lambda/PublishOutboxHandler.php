@@ -4,6 +4,7 @@ namespace App\Lambda;
 
 use App\Application\Outbox\OutboxPublisher;
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use Bref\Context\Context;
 use Bref\Event\Handler;
 
@@ -21,6 +22,7 @@ class PublishOutboxHandler implements Handler
     public function __construct(
         private readonly OutboxPublisher $publisher,
         private readonly Metrics $metrics,
+        private readonly ServiceOrderJourney $journey,
         private readonly int $sleepSeconds = 2,
     ) {}
 
@@ -33,6 +35,7 @@ class PublishOutboxHandler implements Handler
             return ['published' => $this->publishUntilTimeout($context)];
         } finally {
             $this->metrics->flush();
+            $this->journey->flush();
         }
     }
 
