@@ -47,3 +47,8 @@ infra/*.backup
 
 infra/**/secret.yaml
 /build
+
+# Cobertura e SonarQube
+/coverage.xml
+/junit.xml
+/.scannerwork
