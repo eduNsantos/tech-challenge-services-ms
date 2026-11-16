@@ -117,6 +117,24 @@ php artisan test                            # fora do Docker (exige PHP 8.4)
 
 O CI roda os mesmos testes (PHPUnit com o `.env.example`) e `terraform fmt -check` + `terraform validate`.
 
+### Cobertura e qualidade (SonarQube)
+
+```bash
+# Cobertura Clover + relatório JUnit (exige PCOV ou Xdebug)
+php -d pcov.enabled=1 vendor/bin/phpunit --coverage-clover coverage.xml --log-junit junit.xml
+# Análise (lê sonar-project.properties)
+docker run --rm -e SONAR_HOST_URL=http://host.docker.internal:9000 -e SONAR_TOKEN=sqa_xxx \
+  -v "$PWD:/usr/src" sonarsource/sonar-scanner-cli
+```
+
+Última análise (projeto `tech-challenge-services-ms`, perfil *Sonar way*, 1,7 mil linhas em `app/`):
+
+| Quality Gate | Cobertura | Duplicação | Segurança | Confiabilidade | Manutenibilidade |
+|---|---|---|---|---|---|
+| ✅ Passed | **88,6%** | 0% | A (0 issues) | A (0 issues) | A (0 issues) |
+
+![Dashboard do SonarQube — services-ms](https://raw.githubusercontent.com/eduNsantos/tech-challenge-application/main/docs/Fase4/sonarqube/sonarqube-fase4-services-ms.png)
+
 ---
 
 ## API
