@@ -65,7 +65,9 @@ class ServiceOrderExecutionApiTest extends TestCase
         $this->getJson('/service-orders/'.self::ORDER, $this->auth())
             ->assertOk()
             ->assertJsonPath('data.status', 'em_execucao')
-            ->assertJsonCount(2, 'data.services');
+            ->assertJsonCount(2, 'data.services')
+            ->assertJsonMissingPath('data.created_at')
+            ->assertJsonMissingPath('data.updated_at');
     }
 
     public function test_show_returns_404_for_unknown_order(): void

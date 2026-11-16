@@ -51,6 +51,11 @@ class ServiceOrderExecutionController extends Controller
 
     private function respond(ServiceOrder $order): JsonResponse
     {
-        return response()->json(['data' => $order->toArray() + ['services' => $order->services->toArray()]]);
+        $data = $order->toArray();
+
+        // created_at/updated_at são controle interno do MS; não vão na resposta da O.S.
+        unset($data['created_at'], $data['updated_at']);
+
+        return response()->json(['data' => $data + ['services' => $order->services->toArray()]]);
     }
 }
