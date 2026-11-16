@@ -15,6 +15,7 @@ locals {
 
   otel_environment = local.otel_enabled ? {
     OTEL_METRICS_EXPORTER              = "otlp"
+    OTEL_LOGS_EXPORTER                 = "otlp"
     OTEL_EXPORTER_OTLP_ENDPOINT        = "http://localhost:4318"
     OTEL_SERVICE_NAME                  = "services-ms"
     OPENTELEMETRY_COLLECTOR_CONFIG_URI = "/var/task/collector.yaml"
@@ -22,6 +23,7 @@ locals {
     NEW_RELIC_LICENSE_KEY              = var.new_relic_license_key
     } : {
     OTEL_METRICS_EXPORTER = "none"
+    OTEL_LOGS_EXPORTER    = "none"
   }
 
   lambda_base_environment = {

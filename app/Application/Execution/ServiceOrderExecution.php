@@ -3,6 +3,7 @@
 namespace App\Application\Execution;
 
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use App\Domain\ServiceOrder\ServiceOrderStatus;
 use App\Models\ServiceOrder;
 use App\Models\ServiceOrderService;
@@ -14,11 +15,16 @@ use Illuminate\Support\Str;
 
 class ServiceOrderExecution
 {
-    public function __construct(private readonly Metrics $metrics) {}
+    public function __construct(
+        private readonly Metrics $metrics,
+        private readonly ServiceOrderJourney $journey,
+    ) {}
 
     public function startService(string $orderId, string $serviceId, string $userId): ServiceOrder
     {
-        $order = DB::transaction(function () use ($orderId, $serviceId, $userId) {
+        $firstStart = false;
+
+        $order = DB::transaction(function () use ($orderId, $serviceId, $userId, &$firstStart) {
             $order = $this->lockOrder($orderId);
             $service = $this->findService($order, $serviceId);
 
@@ -50,8 +56,13 @@ class ServiceOrderExecution
             return $order->fresh('services');
         });
 
-        // Só depois do commit: um rollback não pode virar métrica.
+        // Só depois do commit: um rollback não pode virar métrica nem passo da jornada.
         $this->metrics->serviceStarted();
+        $this->journey->record('service_started', $orderId, ['service_order_service_id' => $serviceId]);
+
+        if ($firstStart) {
+            $this->journey->record('execution_started', $orderId);
+        }
 
         return $order;
     }
@@ -94,9 +105,14 @@ class ServiceOrderExecution
         });
 
         $this->metrics->serviceFinished($serviceSeconds);
+        $this->journey->record('service_finished', $orderId, [
+            'service_order_service_id' => $serviceId,
+            'duration_seconds' => $serviceSeconds,
+        ]);
 
         if ($executionSeconds !== null) {
             $this->metrics->executionFinished($executionSeconds);
+            $this->journey->record('execution_finished', $orderId, ['duration_seconds' => $executionSeconds]);
         }
 
         return $order;

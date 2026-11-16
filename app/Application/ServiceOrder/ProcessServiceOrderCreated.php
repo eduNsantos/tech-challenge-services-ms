@@ -3,6 +3,7 @@
 namespace App\Application\ServiceOrder;
 
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use App\Domain\ServiceOrder\ServiceOrder;
 use App\Domain\ServiceOrder\ServiceOrderContract;
 use App\Domain\ServiceOrder\ServiceOrderService;
@@ -20,6 +21,7 @@ class ProcessServiceOrderCreated
         private readonly ServiceOrderContract $serviceOrderRepository,
         private readonly ServiceOrderServiceContract $serviceOrderServiceRepository,
         private readonly Metrics $metrics,
+        private readonly ServiceOrderJourney $journey,
     ) {}
 
     /**
@@ -92,6 +94,11 @@ class ProcessServiceOrderCreated
         }
 
         $this->metrics->orderReceived($serviceOrder->status()->value);
+        $this->journey->record('service_order_received', $serviceOrder->id(), [
+            'status' => $serviceOrder->status()->value,
+            'services_count' => count($items),
+            'event_id' => $eventId,
+        ]);
 
         return true;
     }

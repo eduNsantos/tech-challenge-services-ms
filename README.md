@@ -326,6 +326,33 @@ Sem métricas da API: `kubectl logs deploy/otel-collector -n services-ms` e o Se
 Sem métricas das Lambdas: confira a layer do collector e `OTEL_METRICS_EXPORTER=otlp` em
 `aws lambda get-function-configuration --function-name services-ms-status-consumer`.
 
+### Jornada da O.S. (rastreamento entre serviços)
+
+As métricas não levam o id da O.S., para não explodir a cardinalidade. Para seguir uma O.S. pelos serviços, o MS também envia um **log OTel por passo** (`App\Application\Telemetry\ServiceOrderJourney`). Ele passa pelo mesmo collector, cai na tabela `Log` do New Relic e leva o atributo `service_order_id`. É o mesmo atributo que a aplicação e o payment-service usam, então uma única consulta junta os três serviços. O dashboard "Jornada da O.S." fica no repositório da aplicação.
+
+Todo log da jornada tem estes atributos: `event`, `service_order_id`, `journey.source = 'services-ms'`, `service.name = 'services-ms'` e `level` (`INFO`/`WARN`, igual à severidade do log). Os atributos extras dependem do passo:
+
+| `event` | Quando | Atributos extras | `level` |
+|---|---|---|---|
+| `service_order_received` | O.S. importada (`ServiceOrderCreated`) | `status`, `services_count`, `event_id` | INFO |
+| `status_synchronized` | status aplicado (`ServiceOrderStatusChanged`) | `previous_status`, `status`, `sequence`, `event_id` | INFO |
+| `approval_applied` | evento legado de aprovação | `previous_status`, `status`, `event_id` | INFO |
+| `service_started` / `service_finished` | início/fim de um serviço pela API | `service_order_service_id`, `duration_seconds` (no fim) | INFO |
+| `execution_started` / `execution_finished` | primeiro início / último fim | `duration_seconds` (no fim) | INFO |
+| `execution_rejected` | regra de negócio recusou (422) | `operation`, `reason` | WARN |
+| `event_published` / `event_publish_failed` | outbox → fila de execução | `event_type`, `event_id`, `queue`, `lag_seconds` ou `error.type` | INFO / WARN |
+| `dead_letter_redriven` / `dead_letter_exhausted` | nova tentativa da `dlq-redriver` (passo de recuperação da saga) | `queue`, `redrive_attempt`, `event_type`, `event_id` | WARN |
+
+Os passos só são registrados depois do commit: uma transação desfeita não aparece na jornada. Mensagens repetidas, descartadas pela idempotência, também não. Liga com `OTEL_LOGS_EXPORTER=otlp` (padrão `none`); o ConfigMap e o Terraform já ligam junto com as métricas.
+
+```sql
+-- Linha do tempo de uma O.S. no MS
+FROM Log SELECT timestamp, event, status, event_type, queue, duration_seconds, reason
+WHERE journey.source = 'services-ms' AND service_order_id = '<id da O.S.>' SINCE 7 days ago ORDER BY timestamp ASC LIMIT MAX
+-- Falhas e recuperações da execução
+FROM Log SELECT count(*) WHERE journey.source = 'services-ms' AND level = 'WARN' FACET event TIMESERIES
+```
+
 ### Logs das Lambdas
 
 ```bash

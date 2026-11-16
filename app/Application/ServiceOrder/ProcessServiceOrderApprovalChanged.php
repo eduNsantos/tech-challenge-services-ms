@@ -3,6 +3,7 @@
 namespace App\Application\ServiceOrder;
 
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use App\Domain\ServiceOrder\ServiceOrderStatus;
 use App\Models\ServiceOrder;
 use DateTimeImmutable;
@@ -16,7 +17,10 @@ class ProcessServiceOrderApprovalChanged
 {
     public const TYPE = 'ServiceOrderApprovalChanged';
 
-    public function __construct(private readonly Metrics $metrics) {}
+    public function __construct(
+        private readonly Metrics $metrics,
+        private readonly ServiceOrderJourney $journey,
+    ) {}
 
     /**
      * @return bool true when the MS status was changed
@@ -73,6 +77,11 @@ class ProcessServiceOrderApprovalChanged
 
         if ($changed) {
             $this->metrics->statusChanged($previousStatus, $status->value, self::TYPE);
+            $this->journey->record('approval_applied', $orderId, [
+                'previous_status' => $previousStatus,
+                'status' => $status->value,
+                'event_id' => $eventId,
+            ]);
         }
 
         return $changed;

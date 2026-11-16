@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Application\Execution\ServiceOrderExecution;
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use App\Models\ServiceOrder;
 use DomainException;
 use Illuminate\Http\JsonResponse;
@@ -14,6 +15,7 @@ class ServiceOrderExecutionController extends Controller
     public function __construct(
         private readonly ServiceOrderExecution $execution,
         private readonly Metrics $metrics,
+        private readonly ServiceOrderJourney $journey,
     ) {
     }
 
@@ -24,20 +26,24 @@ class ServiceOrderExecutionController extends Controller
 
     public function start(Request $request, string $id, string $serviceId): JsonResponse
     {
-        return $this->guard('start', fn () => $this->execution->startService($id, $serviceId, $request->attributes->get('user_id')));
+        return $this->guard('start', $id, fn () => $this->execution->startService($id, $serviceId, $request->attributes->get('user_id')));
     }
 
     public function finish(Request $request, string $id, string $serviceId): JsonResponse
     {
-        return $this->guard('finish', fn () => $this->execution->finishService($id, $serviceId, $request->attributes->get('user_id')));
+        return $this->guard('finish', $id, fn () => $this->execution->finishService($id, $serviceId, $request->attributes->get('user_id')));
     }
 
-    private function guard(string $operation, callable $action): JsonResponse
+    private function guard(string $operation, string $orderId, callable $action): JsonResponse
     {
         try {
             return $this->respond($action());
         } catch (DomainException $e) {
             $this->metrics->executionRejected($operation);
+            $this->journey->record('execution_rejected', $orderId, [
+                'operation' => $operation,
+                'reason' => $e->getMessage(),
+            ], warning: true);
 
             return response()->json(['message' => $e->getMessage()], 422);
         }

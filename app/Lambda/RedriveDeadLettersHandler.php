@@ -4,6 +4,7 @@ namespace App\Lambda;
 
 use App\Application\Messaging\DeadLetterRedriver;
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use Bref\Context\Context;
 use Bref\Event\Handler;
 
@@ -18,6 +19,7 @@ class RedriveDeadLettersHandler implements Handler
     public function __construct(
         private readonly DeadLetterRedriver $redriver,
         private readonly Metrics $metrics,
+        private readonly ServiceOrderJourney $journey,
     ) {}
 
     /**
@@ -37,6 +39,7 @@ class RedriveDeadLettersHandler implements Handler
             return $results;
         } finally {
             $this->metrics->flush();
+            $this->journey->flush();
         }
     }
 }

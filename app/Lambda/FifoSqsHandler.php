@@ -3,6 +3,7 @@
 namespace App\Lambda;
 
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use Bref\Context\Context;
 use Bref\Event\Sqs\SqsEvent;
 use Bref\Event\Sqs\SqsHandler;
@@ -38,12 +39,14 @@ abstract class FifoSqsHandler extends SqsHandler
     public function handleSqs(SqsEvent $event, Context $context): void
     {
         $metrics = app(Metrics::class);
+        $journey = app(ServiceOrderJourney::class);
 
         try {
             $this->processRecords($event, $metrics);
         } finally {
             // O processo da Lambda é reaproveitado: exporta ao fim de cada invocação.
             $metrics->flush();
+            $journey->flush();
         }
     }
 

@@ -40,7 +40,7 @@ recebida → aguardando_aprovacao
 | Filas | SQS FIFO ×3 + DLQs (nova tentativa automática pela `dlq-redriver`) |
 | Infra | Terraform ≥ 1.10 (CI 1.10.5), backend S3 `techchallenge-tfstate-477478162709-v2`, key `services-ms/terraform.tfstate` |
 | Imagem | `ghcr.io/edunsantos/tech-challenge-services-ms:<sha>` |
-| Observabilidade | OpenTelemetry (métricas OTLP delta) → collector → New Relic |
+| Observabilidade | OpenTelemetry (métricas OTLP delta + logs da jornada da O.S.) → collector → New Relic |
 
 ## Estrutura de arquivos
 
@@ -55,12 +55,13 @@ app/
     Outbox/OutboxPublisher.php                         # outbox → SQS (GET_LOCK, bloqueio por grupo)
     Messaging/DeadLetterRedriver.php                   # DLQ → fila de origem (nova tentativa com limite)
     Telemetry/Metrics.php                              # instrumentos OTel
+    Telemetry/ServiceOrderJourney.php                  # logs OTel da jornada da O.S. (com service_order_id)
   Lambda/FifoSqsHandler.php            # base dos consumers (batchItemFailures, para na 1ª falha)
   Lambda/*Handler.php                  # 4 Lambdas (2 consumers, publisher, dlq-redriver)
   Http/Controllers/ServiceOrderExecutionController.php
   Http/Middleware/VerifyJwt.php        # HS256, claim sub → request attribute user_id
   Http/Middleware/RecordHttpMetrics.php
-  Infrastructure/                      # repositórios Eloquent, MeterProviderFactory
+  Infrastructure/                      # repositórios Eloquent, MeterProviderFactory, LoggerProviderFactory
 database/migrations/                   # service_orders, service_order_services, processed_messages, outbox
 routes/api.php                         # apiPrefix '' → rotas sem /api
 infra/                                 # sqs.tf, rds.tf, vpc.tf, lambda.tf, pod-identity.tf, tests/
@@ -107,9 +108,10 @@ Secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `DB_HOST`, `DB_USERNAME`,
 - **Sem agente New Relic.** Métricas via `App\Application\Telemetry\Metrics` (SDK OTel) → OTLP/HTTP delta.
 - API: `otel-collector` no namespace (`k8s/03-observability`). Lambdas: layer `opentelemetry-collector-amd64-<versão>` + `otel/lambda-collector.yaml`.
 - Liga só com `OTEL_METRICS_EXPORTER=otlp`. Dev/testes usam `none`. Lambdas ficam sem layer se `new_relic_license_key` estiver vazia.
-- Exportação: API no `terminating`; Lambdas chamam `Metrics::flush()` no `finally` do handler — **todo handler novo precisa disso**.
+- Exportação: API no `terminating`; Lambdas chamam `Metrics::flush()` **e** `ServiceOrderJourney::flush()` no `finally` do handler — **todo handler novo precisa disso**.
 - Registre métricas **depois do commit** da transação (rollback não pode virar métrica).
 - **Nunca** use IDs (O.S., cliente, veículo, usuário) como atributo de métrica: cardinalidade + dados pessoais. Rotas usam o template (`$request->route()->uri()`).
+- O id da O.S. vai nos logs da jornada (`ServiceOrderJourney::record($event, $orderId, $attrs)`, `OTEL_LOGS_EXPORTER=otlp`), que viram `Log` no New Relic com `service_order_id` — o mesmo atributo da aplicação e do payment (dashboard "Jornada da O.S." no repo da aplicação). Registre depois do commit; sem dados pessoais. Passos novos: documente na tabela do README e teste em `tests/Feature/ServiceOrderJourneyTest.php`.
 - Atributos de tipo de evento vindos da mensagem passam por `eventTypes()` (desconhecido → `unknown`).
 - Conta New Relic `8497993`. Validar por NRQL: `FROM Metric SELECT count(*) WHERE service.name = 'services-ms' FACET metricName`.
 - Não há como consultar o New Relic daqui (a license key só envia). O usuário roda a NRQL e manda print.

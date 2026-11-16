@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Application\Outbox\OutboxPublisher;
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use App\Lambda\PublishOutboxHandler;
 use App\Lambda\ServiceOrdersCreatedHandler;
 use App\Lambda\ServiceOrderStatusChangedHandler;
@@ -180,7 +181,7 @@ class LambdaHandlersTest extends TestCase
         $client = Mockery::mock(SqsClient::class);
         $client->shouldReceive('sendMessage')->once();
 
-        $handler = new PublishOutboxHandler($this->publisher($client), app(Metrics::class), sleepSeconds: 0);
+        $handler = new PublishOutboxHandler($this->publisher($client), app(Metrics::class), app(ServiceOrderJourney::class), sleepSeconds: 0);
 
         // 10,1s restantes: um único ciclo cabe antes da margem de segurança de 10s.
         $this->assertSame(['published' => 1], $handler->handle([], $this->context(10_100)));

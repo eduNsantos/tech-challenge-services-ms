@@ -3,6 +3,7 @@
 namespace App\Application\Outbox;
 
 use App\Application\Telemetry\Metrics;
+use App\Application\Telemetry\ServiceOrderJourney;
 use Aws\Sqs\SqsClient;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -26,6 +27,7 @@ class OutboxPublisher
     public function __construct(
         private readonly SqsClient $client,
         private readonly Metrics $metrics,
+        private readonly ServiceOrderJourney $journey,
     ) {}
 
     /**
@@ -83,6 +85,12 @@ class OutboxPublisher
             } catch (Throwable $e) {
                 report($e);
                 $this->metrics->messageSent($queue, $event->type, $e::class);
+                $this->journey->record('event_publish_failed', $event->group_id, [
+                    'event_type' => $event->type,
+                    'event_id' => $event->event_id,
+                    'queue' => $queue,
+                    'error.type' => $e::class,
+                ], warning: true);
                 $blockedGroups[$event->group_id] = true;
 
                 continue;
@@ -90,11 +98,14 @@ class OutboxPublisher
 
             $publishedAt = now();
             DB::table('outbox')->where('id', $event->id)->update(['published_at' => $publishedAt]);
-            $this->metrics->messageSent(
-                $queue,
-                $event->type,
-                lagSeconds: (float) Carbon::parse($event->created_at)->diffInSeconds($publishedAt),
-            );
+            $lagSeconds = (float) Carbon::parse($event->created_at)->diffInSeconds($publishedAt);
+            $this->metrics->messageSent($queue, $event->type, lagSeconds: $lagSeconds);
+            $this->journey->record('event_published', $event->group_id, [
+                'event_type' => $event->type,
+                'event_id' => $event->event_id,
+                'queue' => $queue,
+                'lag_seconds' => $lagSeconds,
+            ]);
             $published++;
         }
 
